@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: docwallet-backend
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        fromDatabase:
+          name: docwallet-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://docwallet.netlify.app,http://localhost:5173
+      - key: UPLOAD_DIR
+        value: /data/uploads
+      - key: DOCWALLET_CHAIN_ID
+        value: 137
+      - key: DOCWALLET_NETWORK_NAME
+        value: Polygon
+      - key: DOCWALLET_RPC_URL
+        value: https://polygon-rpc.com
+      - key: DOCWALLET_EXPLORER_URL
+        value: https://polygonscan.com/tx
+      - key: DOCWALLET_NATIVE_SYMBOL
+        value: POL
+      - key: DOCWALLET_NOTARIZATION_PRICE_NATIVE
+        value: 0.01
+      - key: DOCWALLET_REQUIRE_ONCHAIN_VERIFY
+        value: true
+      - key: DOCWALLET_TREASURY_ADDRESS
+        sync: false
+    disk:
+      name: docwallet-files
+      mountPath: /data
+      sizeGB: 10
+
+databases:
+  - name: docwallet-db
+    plan: starter
+    databaseName: docwallet
+    user: docwallet
