@@ -54,6 +54,11 @@ def install_sign(app, db, auth_required, fail, log):
             out['url'] = '/sign/' + p.code
         return out
 
+    def pack_next_party(p):
+        if not p:
+            return None
+        return {'name': p.name, 'email': p.email, 'url': '/sign/' + p.code, 'code': p.code}
+
     def pack_request(req, parties=None):
         return {
             'id': req.id,
@@ -67,7 +72,7 @@ def install_sign(app, db, auth_required, fail, log):
         }
 
     def build_final_hash(req):
-        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.created_at if hasattr(SignatureParty, 'created_at') else SignatureParty.id).all()
+        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         evidence = []
         for p in parties:
             evidence.append({'name': p.signed_name or p.name, 'email': p.signed_email or p.email, 'signed_at': p.signed_at.isoformat() if p.signed_at else None, 'ip': p.ip_address})
@@ -157,4 +162,5 @@ def install_sign(app, db, auth_required, fail, log):
             db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash}))
         db.session.commit()
         parties = SignatureParty.query.filter_by(request_id=req.id).all()
-        return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True)})
+        next_party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
+        return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'next_party': pack_next_party(next_party)})
