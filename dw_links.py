@@ -2,7 +2,8 @@ def install_links(app, db, Document, auth_required, fail, log):
     import datetime as dt
     import secrets
     import uuid
-    from flask import request, jsonify
+    from pathlib import Path
+    from flask import request, jsonify, send_file
 
     class SharedAccess(db.Model):
         __tablename__ = 'shared_access'
@@ -33,6 +34,21 @@ def install_links(app, db, Document, auth_required, fail, log):
             'api_url': '/api/shared/' + item.code,
             'file_url': '/api/shared/' + item.code + '/open',
         }
+
+    def find_live(code):
+        item = SharedAccess.query.filter_by(code=code).first()
+        if not item:
+            return None, None, 'Link não encontrado.'
+        if item.is_revoked:
+            return None, None, 'Link revogado.'
+        if item.expires_at < dt.datetime.utcnow():
+            return None, None, 'Link expirado.'
+        if item.max_views is not None and item.view_count >= item.max_views:
+            return None, None, 'Limite de visualizações atingido.'
+        doc = Document.query.filter_by(id=item.document_id).first()
+        if not doc:
+            return None, None, 'Documento não encontrado.'
+        return item, doc, None
 
     @app.post('/api/shared')
     @auth_required
@@ -68,3 +84,45 @@ def install_links(app, db, Document, auth_required, fail, log):
     def list_shared_access():
         items = SharedAccess.query.filter_by(user_id=request.user.id).order_by(SharedAccess.created_at.desc()).all()
         return jsonify({'success': True, 'shares': [pack(i) for i in items]})
+
+    @app.post('/api/shared/<code>/revoke')
+    @auth_required
+    def revoke_shared_access(code):
+        item = SharedAccess.query.filter_by(code=code, user_id=request.user.id).first()
+        if not item:
+            return fail('Link não encontrado.', 404)
+        item.is_revoked = True
+        db.session.commit()
+        log('shared.revoke', request.user.id, 'shared', item.id, {'code': code})
+        return jsonify({'success': True, 'share': pack(item)})
+
+    @app.get('/api/shared/<code>')
+    def read_shared_access(code):
+        item, doc, err = find_live(code)
+        if err:
+            return fail(err, 404)
+        return jsonify({'success': True, 'share': pack(item), 'document': {
+            'id': doc.id,
+            'name': doc.name,
+            'file_type': doc.file_type,
+            'file_size': doc.file_size,
+            'file_hash': doc.file_hash,
+            'is_notarized': doc.is_notarized,
+            'certificate_id': doc.certificate_id,
+            'created_at': doc.created_at.isoformat() + 'Z',
+        }})
+
+    @app.get('/api/shared/<code>/open')
+    def open_shared_access(code):
+        item, doc, err = find_live(code)
+        if err:
+            return fail(err, 404)
+        item.view_count += 1
+        db.session.commit()
+        path = Path(doc.file_path)
+        if not path.exists():
+            return fail('Arquivo não encontrado.', 404)
+        force_download = request.args.get('download') == '1'
+        if force_download and not item.allow_download:
+            return fail('Download não permitido.', 403)
+        return send_file(path, as_attachment=force_download, download_name=doc.original_filename, mimetype=doc.file_type)
