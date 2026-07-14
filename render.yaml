@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: python fix_sqlalchemy.py && python link_patch.py && python pay_patch.py && python sign_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
+    startCommand: python fix_sqlalchemy.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -18,29 +18,3 @@ services:
         value: https://docwallet.netlify.app,http://localhost:5173
       - key: UPLOAD_DIR
         value: /data/uploads
-      - key: DOCWALLET_CHAIN_ID
-        value: 137
-      - key: DOCWALLET_NETWORK_NAME
-        value: Polygon
-      - key: DOCWALLET_RPC_URL
-        value: https://polygon-rpc.com
-      - key: DOCWALLET_EXPLORER_URL
-        value: https://polygonscan.com/tx
-      - key: DOCWALLET_NATIVE_SYMBOL
-        value: POL
-      - key: DOCWALLET_NOTARIZATION_PRICE_NATIVE
-        value: 0.01
-      - key: DOCWALLET_REQUIRE_ONCHAIN_VERIFY
-        value: true
-      - key: DOCWALLET_TREASURY_ADDRESS
-        sync: false
-    disk:
-      name: docwallet-files
-      mountPath: /data
-      sizeGB: 10
-
-databases:
-  - name: docwallet-db
-    plan: basic-256mb
-    databaseName: docwallet
-    user: docwallet
