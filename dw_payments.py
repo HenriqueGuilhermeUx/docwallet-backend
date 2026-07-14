@@ -21,7 +21,6 @@ def install_payments(app, db, auth_required, fail, log):
         provider_ref = db.Column(db.String(120), nullable=True)
         payload = db.Column(db.JSON, nullable=True)
         created_at = db.Column(db.DateTime, default=dt.datetime.utcnow, nullable=False)
-        paid_at = db.Column(db.DateTime, nullable=True)
 
     with app.app_context():
         db.create_all()
@@ -110,7 +109,7 @@ def install_payments(app, db, auth_required, fail, log):
             'correlation_id': charge.get('correlationID') or item.provider_ref,
             'tx_id': charge.get('txId') or pix.get('txId') or pix.get('transactionID'),
             'created_at': item.created_at.isoformat() + 'Z' if item.created_at else None,
-            'paid_at': item.paid_at.isoformat() + 'Z' if item.paid_at else None,
+            'paid_at': None,
         }
 
     def refresh_woovi_status(item):
@@ -125,8 +124,6 @@ def install_payments(app, db, auth_required, fail, log):
         provider_status = charge.get('status') or pix.get('status')
         item.status = normalize_provider_status(provider_status)
         item.payload = provider_payload
-        if item.status == 'paid' and not item.paid_at:
-            item.paid_at = dt.datetime.utcnow()
         db.session.commit()
         return item
 
@@ -244,8 +241,6 @@ def install_payments(app, db, auth_required, fail, log):
 
         item.status = normalize_provider_status(charge.get('status') or pix.get('status'))
         item.payload = body
-        if item.status == 'paid' and not item.paid_at:
-            item.paid_at = dt.datetime.utcnow()
         db.session.commit()
         log('payment.woovi.webhook', item.user_id, 'payment', item.id, {'status': item.status})
         return jsonify({'success': True})
