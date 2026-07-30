@@ -6,11 +6,12 @@ text = path.read_text(encoding='utf-8')
 snippet = r'''
 
 # BEGIN_DW_REVIEW_USER
+@app.get('/api/review/ensure-google-user')
 @app.post('/api/review/ensure-google-user')
 def _dw_ensure_google_review_user():
     import os as _os
     secret = (_os.environ.get('DOCWALLET_REVIEW_SETUP_SECRET') or '').strip()
-    provided = (__import__('flask').request.headers.get('X-Setup-Secret') or '').strip()
+    provided = (__import__('flask').request.headers.get('X-Setup-Secret') or __import__('flask').request.args.get('secret') or '').strip()
     if secret and provided != secret:
         return error_response('Acesso negado.', 403)
 
