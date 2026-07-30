@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: python fix_sqlalchemy.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && python review_user_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
+    startCommand: python fix_sqlalchemy.py && python cors_patch.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && python review_user_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -15,6 +15,6 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: CORS_ORIGINS
-        value: https://docwallet.netlify.app,http://localhost:5173
+        value: https://docwallet.netlify.app,https://localhost,http://localhost,capacitor://localhost,ionic://localhost,http://localhost:5173
       - key: UPLOAD_DIR
         value: /data/uploads
