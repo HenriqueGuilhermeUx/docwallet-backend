@@ -44,14 +44,39 @@ def install_sign(app, db, auth_required, fail, log):
     with app.app_context():
         db.create_all()
 
+    def utc_now():
+        return dt.datetime.utcnow()
+
+    def iso(value):
+        return value.isoformat() + 'Z' if value else None
+
     def hash_text(value):
         return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
+    def progress_for(parties):
+        total = len(parties or [])
+        signed = len([p for p in (parties or []) if p.status == 'signed'])
+        pending = max(total - signed, 0)
+        percent = int(round((signed / total) * 100)) if total else 0
+        return {'total': total, 'signed': signed, 'pending': pending, 'percent': percent}
+
     def pack_party(p, public=False):
-        out = {'id': p.id, 'name': p.name, 'email': p.email, 'status': p.status, 'signed_at': p.signed_at.isoformat() + 'Z' if p.signed_at else None}
+        out = {
+            'id': p.id,
+            'name': p.name,
+            'email': p.email,
+            'status': p.status,
+            'signed_at': iso(p.signed_at),
+        }
         if not public:
-            out['code'] = p.code
-            out['url'] = '/sign/' + p.code
+            out.update({
+                'code': p.code,
+                'url': '/sign/' + p.code,
+                'signed_name': p.signed_name,
+                'signed_email': p.signed_email,
+                'ip_address': p.ip_address,
+                'user_agent': p.user_agent,
+            })
         return out
 
     def pack_next_party(p):
@@ -60,52 +85,124 @@ def install_sign(app, db, auth_required, fail, log):
         return {'name': p.name, 'email': p.email, 'url': '/sign/' + p.code, 'code': p.code}
 
     def pack_request(req, parties=None):
+        parties = parties if parties is not None else SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+        progress = progress_for(parties)
         return {
             'id': req.id,
             'title': req.title,
             'content_hash': req.content_hash,
             'final_hash': req.final_hash,
             'status': req.status,
-            'created_at': req.created_at.isoformat() + 'Z',
-            'completed_at': req.completed_at.isoformat() + 'Z' if req.completed_at else None,
-            'parties': [pack_party(p) for p in (parties or [])],
+            'created_at': iso(req.created_at),
+            'completed_at': iso(req.completed_at),
+            'total_parties': progress['total'],
+            'signed_count': progress['signed'],
+            'pending_count': progress['pending'],
+            'progress_percent': progress['percent'],
+            'parties': [pack_party(p) for p in parties],
+        }
+
+    def build_evidence(req, parties=None, events=None):
+        parties = parties if parties is not None else SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+        events = events if events is not None else SignatureEvent.query.filter_by(request_id=req.id).order_by(SignatureEvent.created_at).all()
+        return {
+            'provider': 'DocWallet Docs',
+            'evidence_version': '1.0',
+            'generated_at': iso(utc_now()),
+            'signature_request': {
+                'id': req.id,
+                'title': req.title,
+                'status': req.status,
+                'created_at': iso(req.created_at),
+                'completed_at': iso(req.completed_at),
+                'content_hash_sha256': req.content_hash,
+                'final_hash_sha256': req.final_hash,
+                'progress': progress_for(parties),
+            },
+            'parties': [
+                {
+                    'id': p.id,
+                    'name': p.name,
+                    'email': p.email,
+                    'status': p.status,
+                    'signed_name': p.signed_name,
+                    'signed_email': p.signed_email,
+                    'signed_at': iso(p.signed_at),
+                    'ip_address': p.ip_address,
+                    'user_agent': p.user_agent,
+                }
+                for p in parties
+            ],
+            'events': [
+                {
+                    'id': ev.id,
+                    'party_id': ev.party_id,
+                    'event_type': ev.event_type,
+                    'payload': ev.payload,
+                    'created_at': iso(ev.created_at),
+                }
+                for ev in events
+            ],
         }
 
     def build_final_hash(req):
         parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         evidence = []
         for p in parties:
-            evidence.append({'name': p.signed_name or p.name, 'email': p.signed_email or p.email, 'signed_at': p.signed_at.isoformat() if p.signed_at else None, 'ip': p.ip_address})
-        return hash_text(req.contract_content + '\n\nDOCWALLET_SIGNATURES\n' + json.dumps(evidence, sort_keys=True))
+            evidence.append({
+                'party_id': p.id,
+                'name': p.signed_name or p.name,
+                'email': p.signed_email or p.email,
+                'signed_at': p.signed_at.isoformat() if p.signed_at else None,
+                'ip': p.ip_address,
+                'user_agent': p.user_agent,
+            })
+        return hash_text(req.contract_content + '\n\nDOCWALLET_SIGNATURES\n' + json.dumps(evidence, sort_keys=True, ensure_ascii=False))
+
+    def owned_request(request_id):
+        req = SignatureRequest.query.filter_by(id=request_id, user_id=request.user.id).first()
+        return req
+
+    @app.get('/api/signatures')
+    @auth_required
+    def list_signature_requests():
+        requests = SignatureRequest.query.filter_by(user_id=request.user.id).order_by(SignatureRequest.created_at.desc()).limit(100).all()
+        packed = []
+        for req in requests:
+            parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+            packed.append(pack_request(req, parties))
+        return jsonify({'success': True, 'requests': packed})
 
     @app.post('/api/signatures/request')
     @auth_required
     def create_signature_request():
         body = request.get_json(silent=True) or {}
-        title = (body.get('title') or 'Contrato DocWallet').strip()
+        title = (body.get('title') or 'Contrato DocWallet Docs').strip()
         content = body.get('contract_content') or body.get('content') or ''
         parties = body.get('parties') or []
         if not content.strip():
             return fail('Conteúdo do contrato é obrigatório.', 400)
         if len(parties) < 1:
             return fail('Informe pelo menos uma parte para assinatura.', 400)
-        req = SignatureRequest(user_id=request.user.id, title=title, contract_content=content, content_hash=hash_text(content))
+        req = SignatureRequest(user_id=request.user.id, title=title[:240], contract_content=content, content_hash=hash_text(content))
         db.session.add(req)
         db.session.flush()
         created = []
+        seen = set()
         for item in parties:
             name = (item.get('name') or '').strip()
             email = (item.get('email') or '').strip().lower()
-            if not name:
+            key = (name.lower(), email)
+            if not name or key in seen:
                 continue
-            p = SignatureParty(request_id=req.id, code=secrets.token_hex(16), name=name, email=email)
+            seen.add(key)
+            p = SignatureParty(request_id=req.id, code=secrets.token_hex(20), name=name[:180], email=email[:180])
             db.session.add(p)
             created.append(p)
         if not created:
             db.session.rollback()
             return fail('Nenhuma parte válida informada.', 400)
-        ev = SignatureEvent(request_id=req.id, event_type='request.created', payload={'count': len(created)})
-        db.session.add(ev)
+        db.session.add(SignatureEvent(request_id=req.id, event_type='request.created', payload={'count': len(created), 'title': req.title}))
         db.session.commit()
         log('signature.request.create', request.user.id, 'signature', req.id, {'parties': len(created)})
         return jsonify({'success': True, 'request': pack_request(req, created)}), 201
@@ -113,11 +210,55 @@ def install_sign(app, db, auth_required, fail, log):
     @app.get('/api/signatures/<request_id>')
     @auth_required
     def read_signature_request(request_id):
-        req = SignatureRequest.query.filter_by(id=request_id, user_id=request.user.id).first()
+        req = owned_request(request_id)
         if not req:
             return fail('Solicitação não encontrada.', 404)
-        parties = SignatureParty.query.filter_by(request_id=req.id).all()
+        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         return jsonify({'success': True, 'request': pack_request(req, parties), 'contract_content': req.contract_content})
+
+    @app.get('/api/signatures/<request_id>/evidence')
+    @auth_required
+    def read_signature_evidence(request_id):
+        req = owned_request(request_id)
+        if not req:
+            return fail('Solicitação não encontrada.', 404)
+        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+        events = SignatureEvent.query.filter_by(request_id=req.id).order_by(SignatureEvent.created_at).all()
+        return jsonify({'success': True, 'evidence': build_evidence(req, parties, events), 'contract_content': req.contract_content})
+
+    @app.post('/api/signatures/<request_id>/reminder')
+    @auth_required
+    def create_signature_reminder(request_id):
+        req = owned_request(request_id)
+        if not req:
+            return fail('Solicitação não encontrada.', 404)
+        body = request.get_json(silent=True) or {}
+        party_id = body.get('party_id') or ''
+        party = SignatureParty.query.filter_by(id=party_id, request_id=req.id).first() if party_id else None
+        if not party:
+            party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
+        if not party:
+            return fail('Não há assinaturas pendentes para lembrar.', 400)
+        db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='reminder.created', payload={'party': party.name, 'email': party.email}))
+        db.session.commit()
+        log('signature.reminder.create', request.user.id, 'signature', req.id, {'party_id': party.id})
+        sign_path = '/sign/' + party.code
+        message = f'Olá, {party.name}. Você recebeu um documento para assinatura eletrônica no DocWallet Docs: {sign_path}'
+        return jsonify({'success': True, 'party': pack_party(party), 'url': sign_path, 'message': message})
+
+    @app.post('/api/signatures/<request_id>/cancel')
+    @auth_required
+    def cancel_signature_request(request_id):
+        req = owned_request(request_id)
+        if not req:
+            return fail('Solicitação não encontrada.', 404)
+        if req.status == 'completed':
+            return fail('Contrato já concluído não pode ser cancelado.', 400)
+        req.status = 'cancelled'
+        db.session.add(SignatureEvent(request_id=req.id, event_type='request.cancelled', payload={'by': request.user.id}))
+        db.session.commit()
+        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+        return jsonify({'success': True, 'request': pack_request(req, parties)})
 
     @app.get('/api/sign/<code>')
     def public_sign_page(code):
@@ -127,7 +268,11 @@ def install_sign(app, db, auth_required, fail, log):
         req = SignatureRequest.query.filter_by(id=party.request_id).first()
         if not req:
             return fail('Contrato não encontrado.', 404)
-        parties = SignatureParty.query.filter_by(request_id=req.id).all()
+        if req.status == 'cancelled':
+            return fail('Solicitação de assinatura cancelada.', 410)
+        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+        db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='link.opened', payload={'ip': request.headers.get('X-Forwarded-For', request.remote_addr or '')[:80]}))
+        db.session.commit()
         return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'contract_content': req.contract_content})
 
     @app.post('/api/sign/<code>/accept')
@@ -136,31 +281,33 @@ def install_sign(app, db, auth_required, fail, log):
         party = SignatureParty.query.filter_by(code=code).first()
         if not party:
             return fail('Link de assinatura não encontrado.', 404)
-        if party.status == 'signed':
-            return fail('Esta parte já assinou.', 400)
         req = SignatureRequest.query.filter_by(id=party.request_id).first()
         if not req:
             return fail('Contrato não encontrado.', 404)
+        if req.status == 'cancelled':
+            return fail('Solicitação de assinatura cancelada.', 410)
+        if party.status == 'signed':
+            return fail('Esta parte já assinou.', 400)
         signed_name = (body.get('signed_name') or body.get('name') or '').strip()
         signed_email = (body.get('signed_email') or body.get('email') or party.email or '').strip().lower()
         accepted = bool(body.get('accepted'))
         if not signed_name or not accepted:
             return fail('Informe o nome completo e aceite os termos.', 400)
         party.status = 'signed'
-        party.signed_name = signed_name
-        party.signed_email = signed_email
-        party.signed_at = dt.datetime.utcnow()
+        party.signed_name = signed_name[:180]
+        party.signed_email = signed_email[:180]
+        party.signed_at = utc_now()
         party.ip_address = request.headers.get('X-Forwarded-For', request.remote_addr or '')[:80]
         party.user_agent = request.headers.get('User-Agent', '')[:1000]
         db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='party.signed', payload={'name': signed_name, 'email': signed_email, 'ip': party.ip_address}))
-        all_parties = SignatureParty.query.filter_by(request_id=req.id).all()
-        if all(p.status == 'signed' or p.id == party.id for p in all_parties):
+        all_parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
+        if all(p.status == 'signed' for p in all_parties):
             req.status = 'completed'
-            req.completed_at = dt.datetime.utcnow()
+            req.completed_at = utc_now()
             db.session.flush()
             req.final_hash = build_final_hash(req)
             db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash}))
         db.session.commit()
-        parties = SignatureParty.query.filter_by(request_id=req.id).all()
+        parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         next_party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
         return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'next_party': pack_next_party(next_party)})
