@@ -5,6 +5,7 @@ def install_sign(app, db, auth_required, fail, log):
     import secrets
     import uuid
     from flask import request, jsonify
+    from sqlalchemy import text
 
     class SignatureRequest(db.Model):
         __tablename__ = 'signature_requests'
@@ -31,6 +32,16 @@ def install_sign(app, db, auth_required, fail, log):
         signed_at = db.Column(db.DateTime, nullable=True)
         ip_address = db.Column(db.String(80), nullable=True)
         user_agent = db.Column(db.Text, nullable=True)
+        evidence_level = db.Column(db.String(60), nullable=True)
+        signed_cpf = db.Column(db.String(40), nullable=True)
+        signed_phone = db.Column(db.String(80), nullable=True)
+        confirmation_phrase = db.Column(db.String(120), nullable=True)
+        signature_image = db.Column(db.Text, nullable=True)
+        geo_latitude = db.Column(db.String(80), nullable=True)
+        geo_longitude = db.Column(db.String(80), nullable=True)
+        geo_accuracy = db.Column(db.String(80), nullable=True)
+        device_fingerprint = db.Column(db.JSON, nullable=True)
+        consent_text = db.Column(db.Text, nullable=True)
 
     class SignatureEvent(db.Model):
         __tablename__ = 'signature_events'
@@ -43,6 +54,24 @@ def install_sign(app, db, auth_required, fail, log):
 
     with app.app_context():
         db.create_all()
+        for sql in [
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS evidence_level VARCHAR(60)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS signed_cpf VARCHAR(40)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS signed_phone VARCHAR(80)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS confirmation_phrase VARCHAR(120)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS signature_image TEXT",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS geo_latitude VARCHAR(80)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS geo_longitude VARCHAR(80)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS geo_accuracy VARCHAR(80)",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS device_fingerprint JSONB",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS consent_text TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_signature_parties_evidence_level ON signature_parties(evidence_level)",
+        ]:
+            try:
+                db.session.execute(text(sql))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
 
     def utc_now():
         return dt.datetime.utcnow()
@@ -52,6 +81,26 @@ def install_sign(app, db, auth_required, fail, log):
 
     def hash_text(value):
         return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+    def clean_text(value, limit=1000):
+        if value is None:
+            return ''
+        return str(value).strip()[:limit]
+
+    def evidence_payload_for_party(p):
+        return {
+            'evidence_level': p.evidence_level or 'basic_evidence',
+            'signed_cpf': p.signed_cpf,
+            'signed_phone': p.signed_phone,
+            'confirmation_phrase': p.confirmation_phrase,
+            'has_drawn_signature': bool(p.signature_image),
+            'signature_image_sha256': hash_text(p.signature_image) if p.signature_image else None,
+            'geo_latitude': p.geo_latitude,
+            'geo_longitude': p.geo_longitude,
+            'geo_accuracy': p.geo_accuracy,
+            'device_fingerprint': p.device_fingerprint or {},
+            'consent_text': p.consent_text,
+        }
 
     def progress_for(parties):
         total = len(parties or [])
@@ -76,6 +125,15 @@ def install_sign(app, db, auth_required, fail, log):
                 'signed_email': p.signed_email,
                 'ip_address': p.ip_address,
                 'user_agent': p.user_agent,
+                'evidence_level': p.evidence_level or 'basic_evidence',
+                'signed_cpf': p.signed_cpf,
+                'signed_phone': p.signed_phone,
+                'confirmation_phrase': p.confirmation_phrase,
+                'has_drawn_signature': bool(p.signature_image),
+                'geo_latitude': p.geo_latitude,
+                'geo_longitude': p.geo_longitude,
+                'geo_accuracy': p.geo_accuracy,
+                'device_fingerprint': p.device_fingerprint or {},
             })
         return out
 
@@ -107,7 +165,7 @@ def install_sign(app, db, auth_required, fail, log):
         events = events if events is not None else SignatureEvent.query.filter_by(request_id=req.id).order_by(SignatureEvent.created_at).all()
         return {
             'provider': 'DocWallet Docs',
-            'evidence_version': '1.0',
+            'evidence_version': '1.1',
             'generated_at': iso(utc_now()),
             'signature_request': {
                 'id': req.id,
@@ -118,6 +176,7 @@ def install_sign(app, db, auth_required, fail, log):
                 'content_hash_sha256': req.content_hash,
                 'final_hash_sha256': req.final_hash,
                 'progress': progress_for(parties),
+                'legal_note': 'Assinatura eletrônica com evidências digitais DocWallet. Não é assinatura qualificada ICP-Brasil, salvo quando assinada por provider ICP-Brasil habilitado.',
             },
             'parties': [
                 {
@@ -130,6 +189,8 @@ def install_sign(app, db, auth_required, fail, log):
                     'signed_at': iso(p.signed_at),
                     'ip_address': p.ip_address,
                     'user_agent': p.user_agent,
+                    'evidence': evidence_payload_for_party(p),
+                    'signature_image_data_url': p.signature_image,
                 }
                 for p in parties
             ],
@@ -156,6 +217,7 @@ def install_sign(app, db, auth_required, fail, log):
                 'signed_at': p.signed_at.isoformat() if p.signed_at else None,
                 'ip': p.ip_address,
                 'user_agent': p.user_agent,
+                'evidence': evidence_payload_for_party(p),
             })
         return hash_text(req.contract_content + '\n\nDOCWALLET_SIGNATURES\n' + json.dumps(evidence, sort_keys=True, ensure_ascii=False))
 
@@ -288,25 +350,61 @@ def install_sign(app, db, auth_required, fail, log):
             return fail('Solicitação de assinatura cancelada.', 410)
         if party.status == 'signed':
             return fail('Esta parte já assinou.', 400)
-        signed_name = (body.get('signed_name') or body.get('name') or '').strip()
-        signed_email = (body.get('signed_email') or body.get('email') or party.email or '').strip().lower()
+        signed_name = clean_text(body.get('signed_name') or body.get('name') or '', 180)
+        signed_email = clean_text(body.get('signed_email') or body.get('email') or party.email or '', 180).lower()
+        signed_cpf = clean_text(body.get('signed_cpf') or body.get('cpf') or '', 40)
+        signed_phone = clean_text(body.get('signed_phone') or body.get('phone') or '', 80)
+        confirmation_phrase = clean_text(body.get('confirmation_phrase') or '', 120)
+        signature_image = clean_text(body.get('signature_image') or '', 250000)
+        consent_text = clean_text(body.get('consent_text') or '', 3000)
+        geo = body.get('geolocation') or {}
+        device = body.get('device_fingerprint') or body.get('device') or {}
+        evidence_level = clean_text(body.get('evidence_level') or 'reinforced_evidence', 60)
         accepted = bool(body.get('accepted'))
+        phrase_ok = confirmation_phrase.upper().strip() in {'EU ACEITO', 'ACEITO', 'EU ACEITO ASSINAR'}
+        signature_ok = signature_image.startswith('data:image/') and len(signature_image) > 200
         if not signed_name or not accepted:
             return fail('Informe o nome completo e aceite os termos.', 400)
+        if evidence_level == 'reinforced_evidence' and not phrase_ok:
+            return fail('Digite EU ACEITO para confirmar a assinatura reforçada.', 400)
+        if evidence_level == 'reinforced_evidence' and not signature_ok:
+            return fail('Desenhe sua assinatura para concluir a assinatura reforçada.', 400)
         party.status = 'signed'
         party.signed_name = signed_name[:180]
         party.signed_email = signed_email[:180]
+        party.signed_cpf = signed_cpf[:40] or None
+        party.signed_phone = signed_phone[:80] or None
+        party.confirmation_phrase = confirmation_phrase[:120]
+        party.signature_image = signature_image
+        party.geo_latitude = clean_text(geo.get('latitude') if isinstance(geo, dict) else '', 80) or None
+        party.geo_longitude = clean_text(geo.get('longitude') if isinstance(geo, dict) else '', 80) or None
+        party.geo_accuracy = clean_text(geo.get('accuracy') if isinstance(geo, dict) else '', 80) or None
+        party.device_fingerprint = device if isinstance(device, dict) else {}
+        party.evidence_level = evidence_level
+        party.consent_text = consent_text or 'Li, aceito e desejo assinar eletronicamente este documento pelo DocWallet Docs.'
         party.signed_at = utc_now()
         party.ip_address = request.headers.get('X-Forwarded-For', request.remote_addr or '')[:80]
         party.user_agent = request.headers.get('User-Agent', '')[:1000]
-        db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='party.signed', payload={'name': signed_name, 'email': signed_email, 'ip': party.ip_address}))
+        db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='party.signed', payload={
+            'name': signed_name,
+            'email': signed_email,
+            'ip': party.ip_address,
+            'evidence_level': party.evidence_level,
+            'has_drawn_signature': bool(party.signature_image),
+            'signature_image_sha256': hash_text(party.signature_image) if party.signature_image else None,
+            'confirmation_phrase': party.confirmation_phrase,
+            'cpf_provided': bool(party.signed_cpf),
+            'phone_provided': bool(party.signed_phone),
+            'geo_provided': bool(party.geo_latitude and party.geo_longitude),
+            'device_fingerprint': party.device_fingerprint or {},
+        }))
         all_parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         if all(p.status == 'signed' for p in all_parties):
             req.status = 'completed'
             req.completed_at = utc_now()
             db.session.flush()
             req.final_hash = build_final_hash(req)
-            db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash}))
+            db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash, 'evidence_version': '1.1'}))
         db.session.commit()
         parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         next_party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
