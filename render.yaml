@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: python fix_sqlalchemy.py && python cors_patch.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && python intelligence_patch.py && python review_user_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
+    startCommand: python fix_sqlalchemy.py && python cors_patch.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && python intelligence_patch.py && python docflow_patch.py && python review_user_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -25,4 +25,10 @@ services:
       - key: DOCUMENT_INTELLIGENCE_STORE_RAW_TEXT
         value: "true"
       - key: DOCUMENT_INTELLIGENCE_ALLOW_EXTERNAL
+        value: "false"
+      - key: DOCFLOW_ENABLED
+        value: "true"
+      - key: DOCFLOW_DEFAULT_TENANT_NAME
+        value: DocFlow Workspace
+      - key: DOCFLOW_EXTERNAL_INTEGRATIONS_ENABLED
         value: "false"
