@@ -10,3 +10,4 @@ gunicorn==22.0.0
 web3==6.20.1
 python-multipart==0.0.9
 Werkzeug==3.0.3
+pypdf==4.3.1
