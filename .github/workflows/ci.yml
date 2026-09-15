@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:////tmp/docwallet-ci.db
+      UPLOAD_DIR: /tmp/docwallet-uploads
+      JWT_SECRET: ci-jwt-secret
+      NEXOFFICE_BRIDGE_ENABLED: "true"
+      NEXOFFICE_SERVICE_KEY: ci-nexoffice-service-key
+      DOCUMENT_INTELLIGENCE_ENABLED: "true"
+      DOCUMENT_INTELLIGENCE_PROVIDER: internal
+      DOCUMENT_INTELLIGENCE_STORE_RAW_TEXT: "true"
+      DOCUMENT_INTELLIGENCE_ALLOW_EXTERNAL: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py
+      - name: Apply runtime patches required by bridge
+        run: |
+          python sign_patch.py
+          python intelligence_patch.py
+          python nexoffice_patch.py
+      - name: Compile patched runtime
+        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py
+      - name: NexOffice bridge smoke
+        run: python tests/test_nexoffice_bridge.py
