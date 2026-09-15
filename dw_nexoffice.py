@@ -15,6 +15,7 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
     from functools import wraps
 
     from flask import jsonify, request
+    from sqlalchemy.exc import IntegrityError
 
     ENABLED = os.environ.get("NEXOFFICE_BRIDGE_ENABLED", "true").lower() == "true"
     SERVICE_KEY = os.environ.get("NEXOFFICE_SERVICE_KEY", "").strip()
@@ -31,6 +32,21 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         revoked_at = db.Column(db.DateTime, nullable=True)
         updated_at = db.Column(db.DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
         __table_args__ = (db.UniqueConstraint("workspace_id", "user_id", name="uq_nexoffice_workspace_user"),)
+
+    class NexOfficeOperation(db.Model):
+        __tablename__ = "nexoffice_operations"
+        id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+        workspace_id = db.Column(db.String(64), nullable=False, index=True)
+        idempotency_key = db.Column(db.String(220), nullable=False)
+        user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
+        document_id = db.Column(db.String(36), nullable=False, index=True)
+        action_type = db.Column(db.String(80), nullable=False)
+        status = db.Column(db.String(24), nullable=False, default="processing")
+        response_status = db.Column(db.Integer, nullable=True)
+        response_json = db.Column(db.JSON, nullable=True)
+        created_at = db.Column(db.DateTime, default=dt.datetime.utcnow, nullable=False)
+        updated_at = db.Column(db.DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
+        __table_args__ = (db.UniqueConstraint("workspace_id", "idempotency_key", name="uq_nexoffice_operation_key"),)
 
     with app.app_context():
         db.create_all()
@@ -94,6 +110,14 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         except Exception:
             return None, "invalid_workspace"
 
+    def idempotency_key_from_request():
+        key = (request.headers.get("X-Idempotency-Key") or "").strip()
+        if not key:
+            return None, "idempotency_key_required"
+        if len(key) > 220:
+            return None, "idempotency_key_too_long"
+        return key, None
+
     def active_connection(workspace_id, user_id):
         return NexOfficeConnection.query.filter_by(workspace_id=workspace_id, user_id=user_id, status="active").first()
 
@@ -114,6 +138,76 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
             return fail("Capability DocWallet não exposta para integração segura.", 503)
         request.user = user
         return original(*args, **kwargs)
+
+    def unpack_response(response):
+        status = 200
+        body = response
+        if isinstance(response, tuple):
+            body = response[0]
+            if len(response) > 1 and isinstance(response[1], int):
+                status = response[1]
+        elif hasattr(response, "status_code"):
+            status = int(response.status_code)
+        payload = None
+        if hasattr(body, "get_json"):
+            try:
+                payload = body.get_json(silent=True)
+            except TypeError:
+                payload = body.get_json()
+        if payload is None:
+            payload = {"success": 200 <= status < 300}
+        return payload, status
+
+    def run_idempotent(workspace_id, user_id, document_id, action_type, fn):
+        key, error = idempotency_key_from_request()
+        if error:
+            return fail("X-Idempotency-Key é obrigatório para ações NexOffice.", 400, {"code": error})
+        existing = NexOfficeOperation.query.filter_by(workspace_id=workspace_id, idempotency_key=key).first()
+        if existing and existing.status == "succeeded" and existing.response_json is not None:
+            return jsonify(existing.response_json), int(existing.response_status or 200)
+        if existing and existing.status == "processing":
+            return fail("Operação NexOffice já está em processamento.", 409, {"code": "operation_in_progress"})
+        if existing:
+            existing.status = "processing"
+            existing.response_status = None
+            existing.response_json = None
+            operation = existing
+        else:
+            operation = NexOfficeOperation(
+                workspace_id=workspace_id,
+                idempotency_key=key,
+                user_id=user_id,
+                document_id=document_id,
+                action_type=action_type,
+                status="processing",
+            )
+            db.session.add(operation)
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            concurrent = NexOfficeOperation.query.filter_by(workspace_id=workspace_id, idempotency_key=key).first()
+            if concurrent and concurrent.status == "succeeded" and concurrent.response_json is not None:
+                return jsonify(concurrent.response_json), int(concurrent.response_status or 200)
+            return fail("Operação NexOffice concorrente já registrada.", 409, {"code": "operation_in_progress"})
+
+        try:
+            response = fn()
+            payload, status = unpack_response(response)
+            operation.status = "succeeded" if 200 <= status < 300 else "failed"
+            operation.response_status = status
+            operation.response_json = payload
+            db.session.commit()
+            return jsonify(payload), status
+        except Exception as exc:
+            db.session.rollback()
+            operation = NexOfficeOperation.query.filter_by(workspace_id=workspace_id, idempotency_key=key).first()
+            if operation:
+                operation.status = "failed"
+                operation.response_status = 500
+                operation.response_json = {"success": False, "error": "bridge_execution_failed"}
+                db.session.commit()
+            raise exc
 
     @app.get("/api/internal/nexoffice/health")
     @require_service
@@ -216,9 +310,13 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         user = db.session.get(User, document.user_id)
         if not user:
             return fail("Proprietário do documento não encontrado.", 404)
-        response = invoke_user_view("analyze_document", user, document_id)
-        log("nexoffice.document.analyze", user.id, "document", document_id, {"workspace_id": workspace_id})
-        return response
+        return run_idempotent(
+            workspace_id,
+            user.id,
+            document_id,
+            "document.analyze",
+            lambda: invoke_user_view("analyze_document", user, document_id),
+        )
 
     @app.post("/api/internal/nexoffice/documents/<document_id>/signature-request")
     @require_service
@@ -235,13 +333,18 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         parties = body.get("parties") or body.get("signers") or []
         if not isinstance(parties, list) or not parties:
             return fail("Informe pelo menos um signatário.", 400)
-        # The existing intelligence route accepts `parties`; keep the bridge payload aligned.
+        # request.get_json() is cached by Flask; mutating this dict keeps the existing
+        # DocWallet intelligence route compatible without duplicating signature logic.
         body["parties"] = parties
         user = db.session.get(User, document.user_id)
         if not user:
             return fail("Proprietário do documento não encontrado.", 404)
-        response = invoke_user_view("create_signature_from_document", user, document_id)
-        log("nexoffice.document.signature_request", user.id, "document", document_id, {"workspace_id": workspace_id, "signers": len(parties)})
-        return response
+        return run_idempotent(
+            workspace_id,
+            user.id,
+            document_id,
+            "document.signature_request",
+            lambda: invoke_user_view("create_signature_from_document", user, document_id),
+        )
 
     print("DocWallet NexOffice bridge installed.")
