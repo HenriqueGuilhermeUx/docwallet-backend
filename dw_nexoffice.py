@@ -209,6 +209,17 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
                 db.session.commit()
             raise exc
 
+    def document_user_for_workspace(workspace_id, document_id):
+        document, error = connected_document(workspace_id, document_id)
+        if error == "document_not_found":
+            return None, None, fail("Documento não encontrado.", 404)
+        if error:
+            return None, None, fail("Documento não autorizado para este workspace.", 403)
+        user = db.session.get(User, document.user_id)
+        if not user:
+            return None, None, fail("Proprietário do documento não encontrado.", 404)
+        return document, user, None
+
     @app.get("/api/internal/nexoffice/health")
     @require_service
     def nexoffice_internal_health():
@@ -222,6 +233,16 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
             "service": "docwallet-nexoffice-bridge",
             "workspaceConnected": bool(linked_users) if workspace_id else None,
             "linkedUsers": linked_users if workspace_id else None,
+            "capabilities": [
+                "documents.metadata.read",
+                "documents.analyze",
+                "documents.intelligence.read",
+                "documents.alerts.read",
+                "contracts.upcoming_expirations.read",
+                "documents.signature.request",
+            ],
+            "rawFilesReturned": False,
+            "rawTextReturned": False,
         })
 
     @app.post("/api/integrations/nexoffice/connect")
@@ -296,26 +317,83 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
             "createdAt": document.created_at.isoformat() + "Z",
         }})
 
+    @app.get("/api/internal/nexoffice/documents/<document_id>/intelligence")
+    @require_service
+    def nexoffice_document_intelligence(document_id):
+        workspace_id, error = workspace_from_request()
+        if error:
+            return fail("Workspace NexOffice ausente ou inválido.", 400, {"code": error})
+        _document, user, denied = document_user_for_workspace(workspace_id, document_id)
+        if denied:
+            return denied
+        payload, status = unpack_response(invoke_user_view("get_document_intelligence", user, document_id))
+        if isinstance(payload, dict):
+            intelligence = payload.get("intelligence")
+            if isinstance(intelligence, dict):
+                intelligence.pop("rawText", None)
+                intelligence.pop("raw_text", None)
+            payload["rawTextReturned"] = False
+        return jsonify(payload), status
+
+    @app.get("/api/internal/nexoffice/documents/<document_id>/alerts")
+    @require_service
+    def nexoffice_document_alerts(document_id):
+        workspace_id, error = workspace_from_request()
+        if error:
+            return fail("Workspace NexOffice ausente ou inválido.", 400, {"code": error})
+        _document, user, denied = document_user_for_workspace(workspace_id, document_id)
+        if denied:
+            return denied
+        payload, status = unpack_response(invoke_user_view("get_document_alerts", user, document_id))
+        return jsonify(payload), status
+
+    @app.get("/api/internal/nexoffice/contracts/upcoming-expirations")
+    @require_service
+    def nexoffice_upcoming_expirations():
+        workspace_id, error = workspace_from_request()
+        if error:
+            return fail("Workspace NexOffice ausente ou inválido.", 400, {"code": error})
+        try:
+            days = max(1, min(365, int(request.args.get("days", "60") or 60)))
+        except Exception:
+            days = 60
+        connections = NexOfficeConnection.query.filter_by(workspace_id=workspace_id, status="active").all()
+        alerts = []
+        seen = set()
+        for connection in connections[:100]:
+            user = db.session.get(User, connection.user_id)
+            if not user:
+                continue
+            payload, status = unpack_response(invoke_user_view("upcoming_expirations", user))
+            if status >= 300 or not isinstance(payload, dict):
+                continue
+            for alert in payload.get("alerts") or []:
+                if not isinstance(alert, dict):
+                    continue
+                key = str(alert.get("id") or "")
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                alerts.append(alert)
+        alerts.sort(key=lambda item: str(item.get("dueDate") or "9999-12-31"))
+        return jsonify({"success": True, "days": days, "workspaceId": workspace_id, "alerts": alerts[:200]})
+
     @app.post("/api/internal/nexoffice/documents/<document_id>/analyze")
     @require_service
     def nexoffice_analyze_document(document_id):
         workspace_id, error = workspace_from_request()
         if error:
             return fail("Workspace NexOffice ausente ou inválido.", 400, {"code": error})
-        document, error = connected_document(workspace_id, document_id)
-        if error == "document_not_found":
-            return fail("Documento não encontrado.", 404)
-        if error:
-            return fail("Documento não autorizado para este workspace.", 403)
-        user = db.session.get(User, document.user_id)
-        if not user:
-            return fail("Proprietário do documento não encontrado.", 404)
+        document, user, denied = document_user_for_workspace(workspace_id, document_id)
+        if denied:
+            return denied
         return run_idempotent(
             workspace_id,
             user.id,
-            document_id,
+            document.id,
             "document.analyze",
-            lambda: invoke_user_view("analyze_document", user, document_id),
+            lambda: invoke_user_view("analyze_document", user, document.id),
         )
 
     @app.post("/api/internal/nexoffice/documents/<document_id>/signature-request")
@@ -324,11 +402,9 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         workspace_id, error = workspace_from_request()
         if error:
             return fail("Workspace NexOffice ausente ou inválido.", 400, {"code": error})
-        document, error = connected_document(workspace_id, document_id)
-        if error == "document_not_found":
-            return fail("Documento não encontrado.", 404)
-        if error:
-            return fail("Documento não autorizado para este workspace.", 403)
+        document, user, denied = document_user_for_workspace(workspace_id, document_id)
+        if denied:
+            return denied
         body = request.get_json(silent=True) or {}
         parties = body.get("parties") or body.get("signers") or []
         if not isinstance(parties, list) or not parties:
@@ -336,15 +412,12 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         # request.get_json() is cached by Flask; mutating this dict keeps the existing
         # DocWallet intelligence route compatible without duplicating signature logic.
         body["parties"] = parties
-        user = db.session.get(User, document.user_id)
-        if not user:
-            return fail("Proprietário do documento não encontrado.", 404)
         return run_idempotent(
             workspace_id,
             user.id,
-            document_id,
+            document.id,
             "document.signature_request",
-            lambda: invoke_user_view("create_signature_from_document", user, document_id),
+            lambda: invoke_user_view("create_signature_from_document", user, document.id),
         )
 
     print("DocWallet NexOffice bridge installed.")
