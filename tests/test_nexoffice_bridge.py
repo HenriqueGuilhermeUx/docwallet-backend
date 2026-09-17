@@ -62,7 +62,7 @@ def main():
         "/api/documents/upload",
         headers=user_headers,
         data={
-            "file": (io.BytesIO(b"CONTRATO DE TESTE\nValor total R$ 1.250,00\nVigencia 31/12/2027"), "contrato.txt"),
+            "file": (io.BytesIO(b"CONTRATO DE TESTE\nValor total R$ 1.250,00\nVigencia 31/12/2026"), "contrato.txt"),
             "name": "Contrato NexOffice CI",
             "type": "contract",
             "category": "contracts",
@@ -78,6 +78,10 @@ def main():
     health = assert_ok(client.get("/api/internal/nexoffice/health", headers=service_headers))
     assert health["workspaceConnected"] is True
     assert health["linkedUsers"] == 1
+    assert "documents.intelligence.read" in health["capabilities"]
+    assert "documents.alerts.read" in health["capabilities"]
+    assert health["rawFilesReturned"] is False
+    assert health["rawTextReturned"] is False
 
     analyze_headers = {**service_headers, "X-Idempotency-Key": "ci-analyze-1"}
     analyzed = assert_ok(client.post(
@@ -94,6 +98,29 @@ def main():
         json={},
     ))
     assert analyzed_again["intelligence"]["id"] == intelligence_id
+
+    intelligence = assert_ok(client.get(
+        f"/api/internal/nexoffice/documents/{document_id}/intelligence?include_raw=true",
+        headers=service_headers,
+    ))
+    assert intelligence["intelligence"]["id"] == intelligence_id
+    assert "rawText" not in intelligence["intelligence"]
+    assert intelligence["rawTextReturned"] is False
+    assert intelligence["intelligence"]["amounts"]
+
+    alerts = assert_ok(client.get(
+        f"/api/internal/nexoffice/documents/{document_id}/alerts",
+        headers=service_headers,
+    ))
+    assert isinstance(alerts["alerts"], list)
+
+    upcoming = assert_ok(client.get(
+        "/api/internal/nexoffice/contracts/upcoming-expirations?days=365",
+        headers=service_headers,
+    ))
+    assert upcoming["workspaceId"] == workspace_id
+    assert upcoming["days"] == 365
+    assert isinstance(upcoming["alerts"], list)
 
     signature_headers = {**service_headers, "X-Idempotency-Key": "ci-sign-1"}
     signature = assert_ok(client.post(
@@ -116,6 +143,8 @@ def main():
     ))
     denied = client.get(f"/api/internal/nexoffice/documents/{document_id}", headers=service_headers)
     assert denied.status_code == 403, (denied.status_code, denied.get_json())
+    denied_intelligence = client.get(f"/api/internal/nexoffice/documents/{document_id}/intelligence", headers=service_headers)
+    assert denied_intelligence.status_code == 403, (denied_intelligence.status_code, denied_intelligence.get_json())
 
     print(json.dumps({
         "ok": True,
@@ -123,6 +152,8 @@ def main():
         "documentId": document_id,
         "intelligenceId": intelligence_id,
         "signatureRequestId": request_id,
+        "readCapabilities": True,
+        "rawTextReturned": False,
     }))
 
 
