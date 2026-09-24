@@ -49,3 +49,26 @@ if os.environ.get('RUN_COMPACT_MIGRATION', 'false').lower() == 'true':
         print(f'DocWallet compact database migration exited with code/message: {exc}')
     except Exception as exc:
         print(f'DocWallet compact database migration failed safely: {type(exc).__name__}: {exc}')
+
+# Safe storage inventory for Render disk right-sizing. It logs only aggregate
+# file counts and bytes; filenames and document contents are never logged.
+try:
+    candidates = [Path('/data')]
+    configured_upload_dir = (os.environ.get('UPLOAD_DIR') or '').strip()
+    if configured_upload_dir:
+        configured_path = Path(configured_upload_dir).resolve()
+        if configured_path not in candidates:
+            candidates.append(configured_path)
+
+    for storage_path in candidates:
+        if not storage_path.exists():
+            print(f'DocWallet storage inventory: path={storage_path} exists=false')
+            continue
+        files = [item for item in storage_path.rglob('*') if item.is_file()]
+        total_bytes = sum(item.stat().st_size for item in files)
+        print(
+            f'DocWallet storage inventory: path={storage_path} '
+            f'exists=true files={len(files)} bytes={total_bytes}'
+        )
+except Exception as exc:
+    print(f'DocWallet storage inventory failed safely: {type(exc).__name__}: {exc}')
