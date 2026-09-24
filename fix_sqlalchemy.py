@@ -3,6 +3,14 @@ from pathlib import Path
 path = Path(__file__).resolve().parent / "app.py"
 text = path.read_text(encoding="utf-8")
 
+# Keep the backend online even if Render is briefly remounting/replacing /data.
+# When the configured upload path is available it is used normally; otherwise
+# the app falls back to local ephemeral storage for that boot instead of crashing.
+text = text.replace(
+    'UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", BASE_DIR / "uploads")).resolve()\nUPLOAD_DIR.mkdir(parents=True, exist_ok=True)',
+    '''_REQUESTED_UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", BASE_DIR / "uploads")).resolve()\ntry:\n    _REQUESTED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)\n    UPLOAD_DIR = _REQUESTED_UPLOAD_DIR\nexcept OSError as exc:\n    UPLOAD_DIR = (BASE_DIR / "uploads").resolve()\n    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)\n    print(f"DocWallet storage fallback active: requested={_REQUESTED_UPLOAD_DIR} fallback={UPLOAD_DIR} error={type(exc).__name__}")''',
+)
+
 text = text.replace(
     "    metadata = db.Column(db.JSON, nullable=True)",
     "    details = db.Column(db.JSON, nullable=True)",
