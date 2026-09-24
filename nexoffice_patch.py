@@ -16,6 +16,23 @@ _dw_install_nexoffice_bridge(app, db, User, Document, require_auth, error_respon
 if 'BEGIN_DW_NEXOFFICE_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', snippet + '\n\nif __name__ == "__main__":')
 
+# Runtime-only database switch. This keeps the original DATABASE_URL untouched
+# so rollback is immediate: USE_COMPACT_DATABASE=false returns to the old DB.
+if 'BEGIN_DW_COMPACT_DB_SWITCH' not in text:
+    old_database_line = 'DATABASE_URL = os.environ.get("DATABASE_URL")'
+    compact_database_block = '''# BEGIN_DW_COMPACT_DB_SWITCH
+_USE_COMPACT_DATABASE = os.environ.get("USE_COMPACT_DATABASE", "false").lower() == "true"
+DATABASE_URL = (
+    os.environ.get("TARGET_DATABASE_URL")
+    if _USE_COMPACT_DATABASE and os.environ.get("TARGET_DATABASE_URL")
+    else os.environ.get("DATABASE_URL")
+)
+# END_DW_COMPACT_DB_SWITCH'''
+    if old_database_line in text:
+        text = text.replace(old_database_line, compact_database_block, 1)
+    else:
+        print('DocWallet compact DB switch marker not installed: DATABASE_URL line not found.')
+
 path.write_text(text, encoding='utf-8')
 print('DocWallet NexOffice bridge patch applied.')
 
