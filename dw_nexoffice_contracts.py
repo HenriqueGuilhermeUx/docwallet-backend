@@ -97,6 +97,15 @@ def install_nexoffice_contracts(app, db, User, Contract, Document, fail, log):
         payload = body.get_json(silent=True) if hasattr(body, "get_json") else None
         return payload or {"success": 200 <= status < 300}, int(status)
 
+    def template_catalog():
+        view = app.view_functions.get("contract_templates")
+        if not view:
+            return None
+        response = view()
+        payload = response.get_json(silent=True) if hasattr(response, "get_json") else {}
+        templates = payload.get("templates") or []
+        return templates if isinstance(templates, list) else []
+
     def contract_meta(contract):
         return {
             "id": contract.id,
@@ -129,12 +138,10 @@ def install_nexoffice_contracts(app, db, User, Contract, Document, fail, log):
         _user, denied = linked_user(workspace)
         if denied:
             return denied
-        view = app.view_functions.get("contract_templates")
-        if not view:
+        templates = template_catalog()
+        if templates is None:
             return fail("Catálogo de contratos indisponível.", 503)
-        response = view()
-        payload = response.get_json(silent=True) if hasattr(response, "get_json") else {}
-        return jsonify({"success": True, "templates": payload.get("templates") or [], "source": "docwallet", "externalEffects": False})
+        return jsonify({"success": True, "templates": templates, "source": "docwallet", "externalEffects": False})
 
     @app.post("/api/internal/nexoffice/contracts/create")
     @require_service
@@ -156,6 +163,12 @@ def install_nexoffice_contracts(app, db, User, Contract, Document, fail, log):
         description = str(body.get("description") or "").strip()[:8000]
         if not contract_type or not party_a or not party_b or not description:
             return fail("type, party_a, party_b e description são obrigatórios.", 400)
+        templates = template_catalog()
+        if templates is None:
+            return fail("Catálogo de contratos indisponível.", 503)
+        allowed_ids = {str(item.get("id") or "").strip() for item in templates if isinstance(item, dict)}
+        if contract_type not in allowed_ids:
+            return fail("Modelo de contrato não existe no catálogo DocWallet.", 400, {"code": "invalid_contract_template"})
 
         op = NexOfficeContractOperation.query.filter_by(workspace_id=workspace, idempotency_key=key).first()
         if op and op.status == "succeeded" and op.response_json:
