@@ -93,13 +93,15 @@ def main():
     for forbidden in ["contract_content", "ip_address", "signed_cpf", "signed_phone", "geo_latitude", "device_fingerprint", "signature_image"]:
         assert forbidden not in raw, forbidden
 
+    target_party = req["parties"][0]
     reminder = ok(client.post(
         f"/api/internal/nexoffice/signatures/{request_id}/reminder",
         headers=service_headers,
-        json={"partyId": req["parties"][0]["id"]},
+        json={"partyId": target_party["id"]},
     ))
     assert reminder["url"].startswith("/sign/")
-    assert reminder["party"]["name"] == "Maria Cliente"
+    assert reminder["party"]["id"] == target_party["id"]
+    assert reminder["party"]["name"] == target_party["name"]
     assert reminder["sensitiveEvidenceReturned"] is False
 
     cancelled = ok(client.post(f"/api/internal/nexoffice/signatures/{request_id}/cancel", headers=service_headers, json={}))
