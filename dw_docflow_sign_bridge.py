@@ -7,6 +7,8 @@ def install_docflow_sign_bridge(app, db, auth_required, fail, log):
     from flask import jsonify, request
     from sqlalchemy import text
 
+    SIGNABLE_STATUSES = {'approved', 'completed', 'archived'}
+
     def _now():
         return dt.datetime.utcnow()
 
@@ -159,6 +161,7 @@ def install_docflow_sign_bridge(app, db, auth_required, fail, log):
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             )''',
             'CREATE INDEX IF NOT EXISTS idx_docflow_signature_submission ON docflow_signature_link(user_id, submission_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS ux_docflow_signature_submission ON docflow_signature_link(user_id, submission_id)',
             'CREATE INDEX IF NOT EXISTS idx_docflow_signature_request ON docflow_signature_link(signature_request_id)',
         ]
         for statement in statements:
@@ -204,14 +207,15 @@ def install_docflow_sign_bridge(app, db, auth_required, fail, log):
         submission = _submission(submission_id)
         if not submission:
             return fail('Processo DocFlow não encontrado.', 404)
-        if submission['status'] == 'rejected':
-            return fail('Processo rejeitado não pode ser enviado para assinatura.', 400)
 
         existing = _link(submission_id)
         if existing:
             packed = _pack(existing)
             packed['submissionId'] = submission_id
             return jsonify({'success': True, 'signature': packed, 'existing': True})
+
+        if submission['status'] not in SIGNABLE_STATUSES:
+            return fail('O processo precisa estar aprovado ou concluído antes de ser enviado para assinatura.', 409)
 
         body = request.get_json(silent=True) or {}
         parties = body.get('parties') or []
@@ -289,17 +293,18 @@ def install_docflow_sign_bridge(app, db, auth_required, fail, log):
         })
         db.session.execute(text('''
             UPDATE docflow_submission
-               SET status = 'awaiting_signature', current_step = 'sign', updated_at = :updated_at
+               SET status = 'awaiting_signature', current_step = 'sign', completed_at = NULL, updated_at = :updated_at
              WHERE id = :submission_id AND user_id = :user_id
         '''), {'updated_at': now, 'submission_id': submission_id, 'user_id': request.user.id})
         _add_docflow_event(submission, 'docflow.signature_requested', {
             'signature_request_id': signature_request_id,
             'parties': len(clean_parties),
             'content_hash': content_hash,
+            'previous_status': submission['status'],
         })
         db.session.commit()
         try:
-            log('docflow.signature_requested', request.user.id, 'docflow', submission_id, {'signature_request_id': signature_request_id, 'parties': len(clean_parties)})
+            log('docflow.signature_requested', request.user.id, 'docflow', submission_id, {'signature_request_id': signature_request_id, 'parties': len(clean_parties), 'previous_status': submission['status']})
         except Exception:
             pass
 
