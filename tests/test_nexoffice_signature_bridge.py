@@ -33,6 +33,14 @@ def ok(response, expected=None):
     return response.get_json()
 
 
+def value(data, camel, snake, default=None):
+    if camel in data:
+        return data[camel]
+    if snake in data:
+        return data[snake]
+    return default
+
+
 def main():
     client = app.test_client()
     workspace_id = str(uuid.uuid4())
@@ -69,8 +77,8 @@ def main():
     raw_request = requested["request"]
     request_id = raw_request["id"]
     assert raw_request["status"] == "pending"
-    assert raw_request["total_parties"] == 2
-    assert raw_request["signed_count"] == 0
+    assert int(value(raw_request, "totalParties", "total_parties", 0)) == 2
+    assert int(value(raw_request, "signedCount", "signed_count", 0)) == 0
     assert len(raw_request["parties"]) == 2
 
     repeated = ok(client.post(
