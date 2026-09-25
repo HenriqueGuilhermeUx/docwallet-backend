@@ -22,7 +22,7 @@ def install_signature_delivery(app, db, auth_required, fail, log):
     def _owned_party(request_id, party_id):
         row = db.session.execute(text('''
             SELECT sr.id AS request_id, sr.title, sr.user_id,
-                   sp.id AS party_id, sp.code, sp.name, sp.email, sp.status
+                   sp.id AS party_id, sp.code, sp.name, sp.email, sp.phone, sp.status
               FROM signature_requests sr
               JOIN signature_parties sp ON sp.request_id = sr.id
              WHERE sr.id = :request_id
@@ -148,7 +148,7 @@ def install_signature_delivery(app, db, auth_required, fail, log):
 
         sign_url = f"{_public_url()}/sign/{party['code']}"
         if channel == 'whatsapp':
-            phone = _clean_phone(body.get('phone'))
+            phone = _clean_phone(body.get('phone') or party.get('phone'))
             message = f"Olá, {party['name']}. Você recebeu o documento \"{party['title']}\" para assinar eletronicamente no DocWallet: {sign_url}"
             import urllib.parse
             base = f"https://wa.me/{phone}" if phone else 'https://wa.me/'
@@ -156,6 +156,7 @@ def install_signature_delivery(app, db, auth_required, fail, log):
             _add_event(request_id, party_id, 'delivery.whatsapp.prepared', {
                 'channel': 'whatsapp',
                 'target_provided': bool(phone),
+                'target_last4': phone[-4:] if phone else None,
                 'reminder': reminder,
                 'prepared_at': dt.datetime.utcnow().isoformat() + 'Z',
             })
