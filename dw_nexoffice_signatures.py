@@ -1,9 +1,10 @@
 def install_nexoffice_signatures(app, db, User, Contract, fail, log):
-    """Narrow NexOffice -> DocWallet signature bridge.
+    """Read/control extension for NexOffice-created DocWallet signatures.
 
-    Reuses the canonical dw_sign views inside nested Flask request contexts. Raw
-    contract content never leaves DocWallet. NexOffice receives only request,
-    party, status and hash references required for its operational UX.
+    Signature creation already lives in dw_nexoffice.py and reuses the canonical
+    document signature route with idempotency. This module adds only safe status,
+    reminder and cancellation operations, returning no raw content or sensitive
+    evidence fields to NexOffice.
     """
     import hmac
     import os
@@ -99,74 +100,12 @@ def install_nexoffice_signatures(app, db, User, Contract, fail, log):
             "parties": [safe_party(item) for item in (value.get("parties") or []) if isinstance(item, dict)],
         }
 
-    def owned_contract(contract_id, user):
-        contract = db.session.get(Contract, contract_id)
-        if not contract or str(contract.user_id) != str(user.id):
-            return None
-        return contract
-
     def signature_owned_by_user(signature_id, user):
         row = db.session.execute(
             text("select id from signature_requests where id=:id and user_id=:user_id"),
             {"id": signature_id, "user_id": user.id},
         ).first()
         return bool(row)
-
-    @app.post("/api/internal/nexoffice/signatures/request")
-    @require_service
-    def nexoffice_signature_request():
-        workspace, denied = workspace_id()
-        if denied:
-            return denied
-        user, denied = linked_user(workspace)
-        if denied:
-            return denied
-        body = request.get_json(silent=True) or {}
-        contract_id = str(body.get("contractId") or "").strip()
-        parties = body.get("parties") or []
-        if not contract_id:
-            return fail("contractId é obrigatório.", 400, {"code": "contract_id_required"})
-        if not isinstance(parties, list) or not parties:
-            return fail("Informe pelo menos uma parte para assinatura.", 400, {"code": "signature_parties_required"})
-        contract = owned_contract(contract_id, user)
-        if not contract:
-            return fail("Contrato DocWallet não encontrado para este workspace.", 404, {"code": "contract_not_found"})
-        payload, status = canonical(
-            "create_signature_request",
-            user,
-            "/api/signatures/request",
-            "POST",
-            {
-                "title": str(body.get("title") or contract.title or "Contrato DocWallet")[:240],
-                "contract_content": contract.content,
-                "parties": [
-                    {"name": str(item.get("name") or "")[:180], "email": str(item.get("email") or "")[:180]}
-                    for item in parties if isinstance(item, dict)
-                ],
-            },
-        )
-        if status >= 300 or not payload or not payload.get("request"):
-            return jsonify(payload or {"success": False, "error": "signature_request_failed"}), status
-        result = {
-            "success": True,
-            "workspaceId": workspace,
-            "contractId": contract.id,
-            "request": safe_request(payload.get("request")),
-            "privacy": {
-                "rawContentReturned": False,
-                "signatureImageReturned": False,
-                "ipReturned": False,
-                "cpfReturned": False,
-                "phoneReturned": False,
-                "geolocationReturned": False,
-                "deviceFingerprintReturned": False,
-            },
-        }
-        try:
-            log("integration.nexoffice.signature_requested", user.id, "signature", result["request"]["id"], {"workspace_id": workspace, "contract_id": contract.id, "parties": result["request"]["totalParties"]})
-        except Exception:
-            pass
-        return jsonify(result), 201
 
     @app.get("/api/internal/nexoffice/signatures/<signature_id>")
     @require_service
@@ -182,7 +121,7 @@ def install_nexoffice_signatures(app, db, User, Contract, fail, log):
         payload, status = canonical("read_signature_request", user, "/api/signatures/" + signature_id, "GET", None, signature_id)
         if status >= 300 or not payload:
             return jsonify(payload or {"success": False}), status
-        return jsonify({"success": True, "workspaceId": workspace, "request": safe_request(payload.get("request")), "rawContentReturned": False})
+        return jsonify({"success": True, "workspaceId": workspace, "request": safe_request(payload.get("request")), "rawContentReturned": False, "sensitiveEvidenceReturned": False})
 
     @app.post("/api/internal/nexoffice/signatures/<signature_id>/reminder")
     @require_service
@@ -200,7 +139,7 @@ def install_nexoffice_signatures(app, db, User, Contract, fail, log):
         payload, status = canonical("create_signature_reminder", user, "/api/signatures/" + signature_id + "/reminder", "POST", {"party_id": party_id} if party_id else {}, signature_id)
         if status >= 300 or not payload:
             return jsonify(payload or {"success": False}), status
-        return jsonify({"success": True, "party": safe_party(payload.get("party") or {}), "url": str(payload.get("url") or ""), "message": str(payload.get("message") or "")})
+        return jsonify({"success": True, "party": safe_party(payload.get("party") or {}), "url": str(payload.get("url") or ""), "message": str(payload.get("message") or ""), "sensitiveEvidenceReturned": False})
 
     @app.post("/api/internal/nexoffice/signatures/<signature_id>/cancel")
     @require_service
@@ -216,6 +155,6 @@ def install_nexoffice_signatures(app, db, User, Contract, fail, log):
         payload, status = canonical("cancel_signature_request", user, "/api/signatures/" + signature_id + "/cancel", "POST", {}, signature_id)
         if status >= 300 or not payload:
             return jsonify(payload or {"success": False}), status
-        return jsonify({"success": True, "request": safe_request(payload.get("request"))})
+        return jsonify({"success": True, "request": safe_request(payload.get("request")), "sensitiveEvidenceReturned": False})
 
-    print("DocWallet NexOffice signature bridge installed.")
+    print("DocWallet NexOffice signature controls installed.")
