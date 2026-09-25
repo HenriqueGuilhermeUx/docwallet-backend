@@ -21,11 +21,22 @@ _dw_install_nexoffice_contracts(app, db, User, Contract, Document, error_respons
 # END_DW_NEXOFFICE_CONTRACTS_INSTALL
 """
 
+signatures_snippet = """
+
+# BEGIN_DW_NEXOFFICE_SIGNATURES_INSTALL
+from dw_nexoffice_signatures import install_nexoffice_signatures as _dw_install_nexoffice_signatures
+_dw_install_nexoffice_signatures(app, db, User, Contract, error_response, audit)
+# END_DW_NEXOFFICE_SIGNATURES_INSTALL
+"""
+
 if 'BEGIN_DW_NEXOFFICE_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', snippet + '\n\nif __name__ == "__main__":')
 
 if 'BEGIN_DW_NEXOFFICE_CONTRACTS_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', contracts_snippet + '\n\nif __name__ == "__main__":')
+
+if 'BEGIN_DW_NEXOFFICE_SIGNATURES_INSTALL' not in text:
+    text = text.replace('\n\nif __name__ == "__main__":', signatures_snippet + '\n\nif __name__ == "__main__":')
 
 # Runtime-only database switch. This keeps the original DATABASE_URL untouched
 # so rollback is immediate: USE_COMPACT_DATABASE=false returns to the old DB.
