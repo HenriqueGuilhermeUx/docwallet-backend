@@ -77,6 +77,19 @@ def main():
     assert len(before_contracts) == 0
     assert len(before_documents) == 0
 
+    invalid = client.post(
+        "/api/internal/nexoffice/contracts/create",
+        headers={**service_headers, "X-Idempotency-Key": "contract-ci-invalid"},
+        json={
+            "type": "modelo_inventado",
+            "party_a": "Parte A",
+            "party_b": "Parte B",
+            "description": "Este template não existe.",
+        },
+    )
+    assert invalid.status_code == 400, (invalid.status_code, invalid.get_json())
+    assert invalid.get_json().get("code") == "invalid_contract_template"
+
     create_headers = {**service_headers, "X-Idempotency-Key": "contract-ci-1"}
     body = {
         "type": "prestacao_servicos",
@@ -119,8 +132,6 @@ def main():
     ))
     assert metadata["document"]["id"] == created["document"]["id"]
 
-    # A workspace with more than one linked DocWallet owner is intentionally
-    # rejected until NexOffice can select an explicit owner deterministically.
     register_and_connect(client, workspace_id, "second-owner")
     ambiguous = client.post(
         "/api/internal/nexoffice/contracts/create",
@@ -135,6 +146,7 @@ def main():
         "workspaceId": workspace_id,
         "contractId": created["contract"]["id"],
         "documentId": created["document"]["id"],
+        "invalidTemplateBlocked": True,
         "idempotent": True,
         "contentReturned": False,
         "rawFilesReturned": False,
