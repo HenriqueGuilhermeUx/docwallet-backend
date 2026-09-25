@@ -8,12 +8,12 @@ def install_nexoffice_contracts(app, db, User, Contract, Document, fail, log):
     """
     import datetime as dt
     import hmac
-    import json
     import os
     import uuid
     from functools import wraps
 
     from flask import jsonify, request
+    from sqlalchemy import text
 
     ENABLED = os.environ.get("NEXOFFICE_CONTRACT_CREATE_ENABLED", "false").lower() == "true"
     SERVICE_KEY = os.environ.get("NEXOFFICE_SERVICE_KEY", "").strip()
@@ -73,7 +73,7 @@ def install_nexoffice_contracts(app, db, User, Contract, Document, fail, log):
 
     def linked_user(workspace):
         rows = db.session.execute(
-            db.text("select user_id from nexoffice_connections where workspace_id=:workspace and status='active' order by connected_at asc limit 2"),
+            text("select user_id from nexoffice_connections where workspace_id=:workspace and status='active' order by connected_at asc limit 2"),
             {"workspace": workspace},
         ).fetchall()
         if not rows:
