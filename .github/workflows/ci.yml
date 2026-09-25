@@ -36,3 +36,5 @@ jobs:
         run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_nexoffice_contracts.py
       - name: NexOffice bridge smoke
         run: python tests/test_nexoffice_bridge.py
+      - name: NexOffice contract creation bridge smoke
+        run: python tests/test_nexoffice_contract_bridge.py
