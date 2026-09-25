@@ -6,6 +6,7 @@ def install_signature_delivery(app, db, auth_required, fail, log):
     import re
     import urllib.error
     import urllib.request
+    import uuid
     from flask import request, jsonify
     from sqlalchemy import text
 
@@ -38,8 +39,9 @@ def install_signature_delivery(app, db, auth_required, fail, log):
     def _add_event(request_id, party_id, event_type, payload):
         db.session.execute(text('''
             INSERT INTO signature_events (id, request_id, party_id, event_type, payload, created_at)
-            VALUES (CAST(gen_random_uuid() AS text), :request_id, :party_id, :event_type, CAST(:payload AS jsonb), NOW())
+            VALUES (:event_id, :request_id, :party_id, :event_type, CAST(:payload AS jsonb), NOW())
         '''), {
+            'event_id': str(uuid.uuid4()),
             'request_id': request_id,
             'party_id': party_id,
             'event_type': event_type,
