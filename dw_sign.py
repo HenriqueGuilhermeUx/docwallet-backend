@@ -26,6 +26,7 @@ def install_sign(app, db, auth_required, fail, log):
         code = db.Column(db.String(80), unique=True, nullable=False, index=True)
         name = db.Column(db.String(180), nullable=False)
         email = db.Column(db.String(180), nullable=True)
+        phone = db.Column(db.String(80), nullable=True)
         status = db.Column(db.String(40), default='pending', nullable=False)
         signed_name = db.Column(db.String(180), nullable=True)
         signed_email = db.Column(db.String(180), nullable=True)
@@ -42,6 +43,7 @@ def install_sign(app, db, auth_required, fail, log):
         geo_accuracy = db.Column(db.String(80), nullable=True)
         device_fingerprint = db.Column(db.JSON, nullable=True)
         consent_text = db.Column(db.Text, nullable=True)
+        identity_verification = db.Column(db.JSON, nullable=True)
 
     class SignatureEvent(db.Model):
         __tablename__ = 'signature_events'
@@ -55,6 +57,7 @@ def install_sign(app, db, auth_required, fail, log):
     with app.app_context():
         db.create_all()
         for sql in [
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS phone VARCHAR(80)",
             "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS evidence_level VARCHAR(60)",
             "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS signed_cpf VARCHAR(40)",
             "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS signed_phone VARCHAR(80)",
@@ -65,6 +68,7 @@ def install_sign(app, db, auth_required, fail, log):
             "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS geo_accuracy VARCHAR(80)",
             "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS device_fingerprint JSONB",
             "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS consent_text TEXT",
+            "ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS identity_verification JSONB",
             "CREATE INDEX IF NOT EXISTS idx_signature_parties_evidence_level ON signature_parties(evidence_level)",
         ]:
             try:
@@ -100,6 +104,7 @@ def install_sign(app, db, auth_required, fail, log):
             'geo_accuracy': p.geo_accuracy,
             'device_fingerprint': p.device_fingerprint or {},
             'consent_text': p.consent_text,
+            'identity_verification': p.identity_verification or {},
         }
 
     def progress_for(parties):
@@ -119,6 +124,7 @@ def install_sign(app, db, auth_required, fail, log):
         }
         if not public:
             out.update({
+                'phone': p.phone,
                 'code': p.code,
                 'url': '/sign/' + p.code,
                 'signed_name': p.signed_name,
@@ -134,6 +140,7 @@ def install_sign(app, db, auth_required, fail, log):
                 'geo_longitude': p.geo_longitude,
                 'geo_accuracy': p.geo_accuracy,
                 'device_fingerprint': p.device_fingerprint or {},
+                'identity_verification': p.identity_verification or {},
             })
         return out
 
@@ -165,7 +172,7 @@ def install_sign(app, db, auth_required, fail, log):
         events = events if events is not None else SignatureEvent.query.filter_by(request_id=req.id).order_by(SignatureEvent.created_at).all()
         return {
             'provider': 'DocWallet Docs',
-            'evidence_version': '1.1',
+            'evidence_version': '1.2',
             'generated_at': iso(utc_now()),
             'signature_request': {
                 'id': req.id,
@@ -183,6 +190,7 @@ def install_sign(app, db, auth_required, fail, log):
                     'id': p.id,
                     'name': p.name,
                     'email': p.email,
+                    'phone': p.phone,
                     'status': p.status,
                     'signed_name': p.signed_name,
                     'signed_email': p.signed_email,
@@ -254,11 +262,12 @@ def install_sign(app, db, auth_required, fail, log):
         for item in parties:
             name = (item.get('name') or '').strip()
             email = (item.get('email') or '').strip().lower()
-            key = (name.lower(), email)
+            phone = clean_text(item.get('phone') or '', 80)
+            key = (name.lower(), email, phone)
             if not name or key in seen:
                 continue
             seen.add(key)
-            p = SignatureParty(request_id=req.id, code=secrets.token_hex(20), name=name[:180], email=email[:180])
+            p = SignatureParty(request_id=req.id, code=secrets.token_hex(20), name=name[:180], email=email[:180], phone=phone or None)
             db.session.add(p)
             created.append(p)
         if not created:
@@ -301,7 +310,7 @@ def install_sign(app, db, auth_required, fail, log):
             party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
         if not party:
             return fail('Não há assinaturas pendentes para lembrar.', 400)
-        db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='reminder.created', payload={'party': party.name, 'email': party.email}))
+        db.session.add(SignatureEvent(request_id=req.id, party_id=party.id, event_type='reminder.created', payload={'party': party.name, 'email': party.email, 'phone': party.phone}))
         db.session.commit()
         log('signature.reminder.create', request.user.id, 'signature', req.id, {'party_id': party.id})
         sign_path = '/sign/' + party.code
@@ -359,16 +368,18 @@ def install_sign(app, db, auth_required, fail, log):
         consent_text = clean_text(body.get('consent_text') or '', 3000)
         geo = body.get('geolocation') or {}
         device = body.get('device_fingerprint') or body.get('device') or {}
-        evidence_level = clean_text(body.get('evidence_level') or 'reinforced_evidence', 60)
+        identity = party.identity_verification or {}
+        identity_verified = bool(isinstance(identity, dict) and identity.get('verified_at'))
+        evidence_level = 'verified_evidence' if identity_verified else 'reinforced_evidence'
         accepted = bool(body.get('accepted'))
         phrase_ok = confirmation_phrase.upper().strip() in {'EU ACEITO', 'ACEITO', 'EU ACEITO ASSINAR'}
         signature_ok = signature_image.startswith('data:image/') and len(signature_image) > 200
         if not signed_name or not accepted:
             return fail('Informe o nome completo e aceite os termos.', 400)
-        if evidence_level == 'reinforced_evidence' and not phrase_ok:
-            return fail('Digite EU ACEITO para confirmar a assinatura reforçada.', 400)
-        if evidence_level == 'reinforced_evidence' and not signature_ok:
-            return fail('Desenhe sua assinatura para concluir a assinatura reforçada.', 400)
+        if evidence_level in {'reinforced_evidence', 'verified_evidence'} and not phrase_ok:
+            return fail('Digite EU ACEITO para confirmar a assinatura.', 400)
+        if evidence_level in {'reinforced_evidence', 'verified_evidence'} and not signature_ok:
+            return fail('Desenhe sua assinatura para concluir.', 400)
         party.status = 'signed'
         party.signed_name = signed_name[:180]
         party.signed_email = signed_email[:180]
@@ -390,6 +401,8 @@ def install_sign(app, db, auth_required, fail, log):
             'email': signed_email,
             'ip': party.ip_address,
             'evidence_level': party.evidence_level,
+            'identity_verified': identity_verified,
+            'identity_method': identity.get('method') if isinstance(identity, dict) else None,
             'has_drawn_signature': bool(party.signature_image),
             'signature_image_sha256': hash_text(party.signature_image) if party.signature_image else None,
             'confirmation_phrase': party.confirmation_phrase,
@@ -404,7 +417,7 @@ def install_sign(app, db, auth_required, fail, log):
             req.completed_at = utc_now()
             db.session.flush()
             req.final_hash = build_final_hash(req)
-            db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash, 'evidence_version': '1.1'}))
+            db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash, 'evidence_version': '1.2'}))
         db.session.commit()
         parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         next_party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
