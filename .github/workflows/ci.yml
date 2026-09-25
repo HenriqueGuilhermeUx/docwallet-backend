@@ -14,6 +14,7 @@ jobs:
       JWT_SECRET: ci-jwt-secret
       NEXOFFICE_BRIDGE_ENABLED: "true"
       NEXOFFICE_SERVICE_KEY: ci-nexoffice-service-key
+      NEXOFFICE_CONTRACT_CREATE_ENABLED: "true"
       DOCUMENT_INTELLIGENCE_ENABLED: "true"
       DOCUMENT_INTELLIGENCE_PROVIDER: internal
       DOCUMENT_INTELLIGENCE_STORE_RAW_TEXT: "true"
@@ -25,13 +26,13 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py
+        run: python -m py_compile app.py dw_nexoffice.py dw_nexoffice_contracts.py nexoffice_patch.py
       - name: Apply runtime patches required by bridge
         run: |
           python sign_patch.py
           python intelligence_patch.py
           python nexoffice_patch.py
       - name: Compile patched runtime
-        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py
+        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_nexoffice_contracts.py
       - name: NexOffice bridge smoke
         run: python tests/test_nexoffice_bridge.py
