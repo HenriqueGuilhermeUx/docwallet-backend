@@ -4,7 +4,8 @@ import os
 import urllib.error
 import urllib.request
 
-path = Path(__file__).resolve().parent / 'app.py'
+root = Path(__file__).resolve().parent
+path = root / 'app.py'
 text = path.read_text(encoding='utf-8')
 
 snippet = """
@@ -19,6 +20,29 @@ if 'BEGIN_DW_ICP_SIGNATURE_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', snippet + '\n\nif __name__ == "__main__":')
 
 path.write_text(text, encoding='utf-8')
+
+# Rest PKI Core accepts a signature-session document either by an existing
+# document `id` OR by an inline `file`. DocWallet uploads the PDF inline, so
+# sending both fields causes InvalidRequest: "Cannot specify both Id and File".
+provider_path = root / 'dw_icp_signature.py'
+provider_text = provider_path.read_text(encoding='utf-8')
+old_document_header = '''        document = {
+            "id": str(req["id"]),
+            "file": {
+'''
+new_document_header = '''        document = {
+            # Inline document: Rest PKI Core requires `file` without `id`.
+            "file": {
+'''
+if old_document_header in provider_text:
+    provider_text = provider_text.replace(old_document_header, new_document_header, 1)
+    provider_path.write_text(provider_text, encoding='utf-8')
+    print('DocWallet Rest PKI payload patch applied: inline file without document id.')
+elif 'Inline document: Rest PKI Core requires `file` without `id`.' in provider_text:
+    print('DocWallet Rest PKI payload patch already applied.')
+else:
+    print('DocWallet Rest PKI payload patch: expected block not found; leaving provider unchanged.')
+
 print('DocWallet ICP signature patch applied.')
 
 
