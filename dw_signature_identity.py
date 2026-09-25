@@ -135,6 +135,25 @@ def install_signature_identity(app, db, fail, log):
             'CREATE INDEX IF NOT EXISTS idx_signature_identity_party ON signature_identity_challenges(party_id)',
             'CREATE INDEX IF NOT EXISTS idx_signature_identity_status ON signature_identity_challenges(status)',
             'ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS identity_verification JSONB',
+            '''CREATE OR REPLACE FUNCTION docwallet_enforce_verified_evidence()
+               RETURNS TRIGGER AS $$
+               BEGIN
+                 IF NEW.evidence_level = 'verified_evidence' AND
+                    (NEW.identity_verification IS NULL OR COALESCE(NEW.identity_verification->>'verified_at', '') = '') THEN
+                   NEW.evidence_level := 'reinforced_evidence';
+                 ELSIF NEW.status = 'signed' AND
+                       NEW.identity_verification IS NOT NULL AND
+                       COALESCE(NEW.identity_verification->>'verified_at', '') <> '' AND
+                       NEW.evidence_level <> 'icp_brasil_qualified' THEN
+                   NEW.evidence_level := 'verified_evidence';
+                 END IF;
+                 RETURN NEW;
+               END;
+               $$ LANGUAGE plpgsql''',
+            'DROP TRIGGER IF EXISTS trg_docwallet_verified_evidence ON signature_parties',
+            '''CREATE TRIGGER trg_docwallet_verified_evidence
+               BEFORE INSERT OR UPDATE ON signature_parties
+               FOR EACH ROW EXECUTE FUNCTION docwallet_enforce_verified_evidence()''',
         ]
         for sql in statements:
             try:
@@ -289,7 +308,8 @@ def install_signature_identity(app, db, fail, log):
         '''), {'attempts': attempts, 'verified_at': now, 'id': challenge_id})
         db.session.execute(text('''
             UPDATE signature_parties
-               SET identity_verification = CAST(:identity AS jsonb)
+               SET identity_verification = CAST(:identity AS jsonb),
+                   evidence_level = 'verified_evidence'
              WHERE id = :party_id
         '''), {'identity': json.dumps(identity, ensure_ascii=False), 'party_id': party['party_id']})
         _event(party['request_id'], party['party_id'], 'identity.email_otp.verified', {
