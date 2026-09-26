@@ -1,7 +1,64 @@
 from pathlib import Path
 
-path = Path(__file__).resolve().parent / 'app.py'
+ROOT = Path(__file__).resolve().parent
+path = ROOT / 'app.py'
 text = path.read_text(encoding='utf-8')
+
+
+def _replace_required(source, old, new, label):
+    """Apply an idempotent startup hardening replacement or fail closed."""
+    if new in source:
+        return source
+    if old not in source:
+        raise RuntimeError(f'DocWallet sign privacy patch target not found: {label}')
+    return source.replace(old, new, 1)
+
+
+# The project currently applies runtime compatibility patches before importing the
+# Flask app. Keep public signature links privacy-safe in that same startup phase:
+# public signers must never receive another party's bearer code, CPF, phone, IP,
+# geolocation, device fingerprint or evidence package.
+sign_path = ROOT / 'dw_sign.py'
+sign_text = sign_path.read_text(encoding='utf-8')
+
+sign_text = _replace_required(
+    sign_text,
+    "        out = {\n            'id': p.id,\n            'name': p.name,",
+    "        out = {\n            'name': p.name,",
+    'remove public party id',
+)
+sign_text = _replace_required(
+    sign_text,
+    "        if not public:\n            out.update({\n                'phone': p.phone,",
+    "        if not public:\n            out.update({\n                'id': p.id,\n                'phone': p.phone,",
+    'keep party id on authenticated payloads only',
+)
+sign_text = _replace_required(
+    sign_text,
+    "    def pack_request(req, parties=None):",
+    "    def pack_request(req, parties=None, public=False):",
+    'public request serializer flag',
+)
+sign_text = _replace_required(
+    sign_text,
+    "            'parties': [pack_party(p) for p in parties],",
+    "            'parties': [\n                ({'name': p.name, 'status': p.status, 'signed_at': iso(p.signed_at)} if public else pack_party(p))\n                for p in parties\n            ],",
+    'minimal public party list',
+)
+sign_text = _replace_required(
+    sign_text,
+    "        return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'contract_content': req.contract_content})",
+    "        return jsonify({'success': True, 'request': pack_request(req, parties, public=True), 'party': pack_party(party, public=True), 'contract_content': req.contract_content})",
+    'public signature GET serializer',
+)
+sign_text = _replace_required(
+    sign_text,
+    "        next_party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()\n        return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'next_party': pack_next_party(next_party)})",
+    "        return jsonify({'success': True, 'request': pack_request(req, parties, public=True), 'party': pack_party(party, public=True), 'next_party': None})",
+    'do not disclose next signer bearer link',
+)
+
+sign_path.write_text(sign_text, encoding='utf-8')
 
 sign_snippet = """
 

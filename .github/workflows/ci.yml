@@ -33,5 +33,7 @@ jobs:
           python nexoffice_patch.py
       - name: Compile patched runtime
         run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py
+      - name: Sign public privacy smoke
+        run: python tests/test_sign_public_privacy_patch.py
       - name: NexOffice bridge smoke
         run: python tests/test_nexoffice_bridge.py
