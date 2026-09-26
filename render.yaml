@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: python fix_sqlalchemy.py && python cors_patch.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && python intelligence_patch.py && python docflow_patch.py && python icp_signature_patch.py && python review_user_patch.py && python nexoffice_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
+    startCommand: python fix_sqlalchemy.py && python cors_patch.py && python link_patch.py && python pay_patch.py && python paid_cert_patch.py && python sign_patch.py && python intelligence_patch.py && python docflow_patch.py && python icp_signature_patch.py && python review_user_patch.py && python nexoffice_patch.py && python taxagent_patch.py && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --log-level info
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -46,3 +46,7 @@ services:
         value: "true"
       - key: NEXOFFICE_CONNECT_TOKEN_TTL_SECONDS
         value: "600"
+      - key: TAXAGENT_EVIDENCE_BRIDGE_ENABLED
+        value: "false"
+      - key: TAXAGENT_EVIDENCE_MAX_BYTES
+        value: "10485760"

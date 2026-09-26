@@ -14,6 +14,9 @@ jobs:
       JWT_SECRET: ci-jwt-secret
       NEXOFFICE_BRIDGE_ENABLED: "true"
       NEXOFFICE_SERVICE_KEY: ci-nexoffice-service-key
+      TAXAGENT_EVIDENCE_BRIDGE_ENABLED: "true"
+      DOCWALLET_TAXAGENT_SERVICE_KEY: ci-taxagent-evidence-key
+      TAXAGENT_EVIDENCE_MAX_BYTES: "10485760"
       DOCUMENT_INTELLIGENCE_ENABLED: "true"
       DOCUMENT_INTELLIGENCE_PROVIDER: internal
       DOCUMENT_INTELLIGENCE_STORE_RAW_TEXT: "true"
@@ -25,17 +28,20 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py dw_signed_document.py
-      - name: Apply runtime patches required by bridge
+        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py dw_taxagent.py taxagent_patch.py dw_signed_document.py
+      - name: Apply runtime patches required by bridges
         run: |
           python sign_patch.py
           python intelligence_patch.py
           python nexoffice_patch.py
+          python taxagent_patch.py
       - name: Compile patched runtime
-        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_signed_document.py
+        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_taxagent.py dw_signed_document.py
       - name: Sign public privacy smoke
         run: python tests/test_sign_public_privacy_patch.py
       - name: Signed PDF export smoke
         run: python tests/test_signed_document_pdf.py
       - name: NexOffice bridge smoke
         run: python tests/test_nexoffice_bridge.py
+      - name: TaxAgent evidence bridge smoke
+        run: python tests/test_taxagent_evidence_bridge.py
