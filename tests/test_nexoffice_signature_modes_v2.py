@@ -56,7 +56,7 @@ def main():
         "/api/documents/upload",
         headers=user_headers,
         data={
-            "file": (io.BytesIO(b"CONTRATO CI - assinatura eletrônica e ICP-Brasil"), "contrato.txt"),
+            "file": (io.BytesIO("CONTRATO CI - assinatura eletrônica e ICP-Brasil".encode("utf-8")), "contrato.txt"),
             "name": "Contrato modos assinatura CI",
             "type": "contract",
             "category": "contracts",
