@@ -84,6 +84,14 @@ _dw_install_signature_identity(app, db, error_response, audit)
 # END_DW_SIGNATURE_IDENTITY_INSTALL
 """
 
+signed_document_snippet = """
+
+# BEGIN_DW_SIGNED_DOCUMENT_INSTALL
+from dw_signed_document import install_signed_document as _dw_install_signed_document
+_dw_install_signed_document(app, db, require_auth, error_response, audit)
+# END_DW_SIGNED_DOCUMENT_INSTALL
+"""
+
 if 'BEGIN_DW_SIGN_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', sign_snippet + '\n\nif __name__ == "__main__":')
 
@@ -100,6 +108,16 @@ if 'BEGIN_DW_SIGNATURE_IDENTITY_INSTALL' not in text:
         text = text.replace('# END_DW_SIGN_INSTALL', '# END_DW_SIGN_INSTALL' + identity_snippet)
     else:
         text = text.replace('\n\nif __name__ == "__main__":', identity_snippet + '\n\nif __name__ == "__main__":')
+
+if 'BEGIN_DW_SIGNED_DOCUMENT_INSTALL' not in text:
+    if '# END_DW_SIGNATURE_IDENTITY_INSTALL' in text:
+        text = text.replace('# END_DW_SIGNATURE_IDENTITY_INSTALL', '# END_DW_SIGNATURE_IDENTITY_INSTALL' + signed_document_snippet)
+    elif '# END_DW_SIGNATURE_DELIVERY_INSTALL' in text:
+        text = text.replace('# END_DW_SIGNATURE_DELIVERY_INSTALL', '# END_DW_SIGNATURE_DELIVERY_INSTALL' + signed_document_snippet)
+    elif '# END_DW_SIGN_INSTALL' in text:
+        text = text.replace('# END_DW_SIGN_INSTALL', '# END_DW_SIGN_INSTALL' + signed_document_snippet)
+    else:
+        text = text.replace('\n\nif __name__ == "__main__":', signed_document_snippet + '\n\nif __name__ == "__main__":')
 
 path.write_text(text, encoding='utf-8')
 print('DocWallet sign patch applied.')

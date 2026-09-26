@@ -25,15 +25,17 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py
+        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py dw_signed_document.py
       - name: Apply runtime patches required by bridge
         run: |
           python sign_patch.py
           python intelligence_patch.py
           python nexoffice_patch.py
       - name: Compile patched runtime
-        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py
+        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_signed_document.py
       - name: Sign public privacy smoke
         run: python tests/test_sign_public_privacy_patch.py
+      - name: Signed PDF export smoke
+        run: python tests/test_signed_document_pdf.py
       - name: NexOffice bridge smoke
         run: python tests/test_nexoffice_bridge.py
