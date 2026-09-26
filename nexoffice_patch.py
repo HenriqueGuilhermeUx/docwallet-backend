@@ -13,8 +13,22 @@ _dw_install_nexoffice_bridge(app, db, User, Document, require_auth, error_respon
 # END_DW_NEXOFFICE_INSTALL
 """
 
+signature_modes_snippet = """
+
+# BEGIN_DW_NEXOFFICE_SIGNATURE_MODES_INSTALL
+from dw_nexoffice_signature_modes import install_nexoffice_signature_modes as _dw_install_nexoffice_signature_modes
+_dw_install_nexoffice_signature_modes(app, db, User, error_response, audit)
+# END_DW_NEXOFFICE_SIGNATURE_MODES_INSTALL
+"""
+
 if 'BEGIN_DW_NEXOFFICE_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', snippet + '\n\nif __name__ == "__main__":')
+
+if 'BEGIN_DW_NEXOFFICE_SIGNATURE_MODES_INSTALL' not in text:
+    if '# END_DW_NEXOFFICE_INSTALL' in text:
+        text = text.replace('# END_DW_NEXOFFICE_INSTALL', '# END_DW_NEXOFFICE_INSTALL' + signature_modes_snippet)
+    else:
+        text = text.replace('\n\nif __name__ == "__main__":', signature_modes_snippet + '\n\nif __name__ == "__main__":')
 
 # Runtime-only database switch. This keeps the original DATABASE_URL untouched
 # so rollback is immediate: USE_COMPACT_DATABASE=false returns to the old DB.

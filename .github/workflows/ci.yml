@@ -13,11 +13,18 @@ jobs:
       UPLOAD_DIR: /tmp/docwallet-uploads
       JWT_SECRET: ci-jwt-secret
       NEXOFFICE_BRIDGE_ENABLED: "true"
+      NEXOFFICE_SIGNATURE_BRIDGE_ENABLED: "true"
+      NEXOFFICE_ICP_SIGNATURE_ENABLED: "false"
       NEXOFFICE_SERVICE_KEY: ci-nexoffice-service-key
       DOCUMENT_INTELLIGENCE_ENABLED: "true"
       DOCUMENT_INTELLIGENCE_PROVIDER: internal
       DOCUMENT_INTELLIGENCE_STORE_RAW_TEXT: "true"
       DOCUMENT_INTELLIGENCE_ALLOW_EXTERNAL: "false"
+      ICP_SIGNATURE_ENABLED: "false"
+      ICP_SIGNATURE_PROVIDER: lacuna
+      ICP_SIGNATURE_MODE: external_provider
+      ICP_SIGNATURE_PROVIDER_BASE_URL: https://homolog.core.pki.rest
+      ICP_SIGNATURE_API_KEY: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,17 +32,20 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py dw_signed_document.py
+        run: python -m py_compile app.py dw_nexoffice.py dw_nexoffice_signature_modes.py dw_icp_signature.py nexoffice_patch.py icp_signature_patch.py dw_signed_document.py
       - name: Apply runtime patches required by bridge
         run: |
           python sign_patch.py
           python intelligence_patch.py
+          python icp_signature_patch.py
           python nexoffice_patch.py
       - name: Compile patched runtime
-        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_signed_document.py
+        run: python -m py_compile app.py dw_sign.py dw_intelligence.py dw_nexoffice.py dw_nexoffice_signature_modes.py dw_icp_signature.py dw_signed_document.py
       - name: Sign public privacy smoke
         run: python tests/test_sign_public_privacy_patch.py
       - name: Signed PDF export smoke
         run: python tests/test_signed_document_pdf.py
       - name: NexOffice bridge smoke
         run: python tests/test_nexoffice_bridge.py
+      - name: NexOffice electronic + ICP signature modes smoke
+        run: python tests/test_nexoffice_signature_modes_v2.py
