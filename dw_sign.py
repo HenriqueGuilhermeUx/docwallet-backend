@@ -4,6 +4,8 @@ def install_sign(app, db, auth_required, fail, log):
     import json
     import secrets
     import uuid
+    import os
+    import urllib.request
     from flask import request, jsonify
     from sqlalchemy import text
 
@@ -346,6 +348,47 @@ def install_sign(app, db, auth_required, fail, log):
         db.session.commit()
         return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'contract_content': req.contract_content})
 
+    def notify_nexjud_completed(req):
+        """Best-effort closed-loop signal. Signature success never depends on NexJud."""
+        if (os.environ.get('NEXJUD_OUTCOME_EVENTS_ENABLED', 'false').lower() != 'true':
+            return
+        base_url = (os.environ.get('NEXJUD_OUTCOME_INGEST_URL') or '').strip()
+        key = (os.environ.get('NEXJUD_OUTCOME_INGEST_KEY') or '').strip()
+        if not base_url or not key:
+            return
+        try:
+            # Optional legal linkage is encoded when the request is created by an integrated workflow.
+            event = SignatureEvent.query.filter_by(request_id=req.id, event_type='nexjud.context').order_by(SignatureEvent.created_at.desc()).first()
+            context = event.payload if event and isinstance(event.payload, dict) else {}
+            user_id = str(context.get('nexjud_user_id') or '').strip()
+            case_id = str(context.get('nexjud_case_id') or '').strip()
+            if not user_id or not case_id:
+                return
+            payload = {
+                'provider': 'docwallet',
+                'eventType': 'signature.completed',
+                'externalEventId': f'docwallet-signature:{req.id}:completed',
+                'userId': user_id,
+                'caseId': case_id,
+                'documentRef': str(context.get('document_ref') or req.id)[:500],
+                'occurredAt': req.completed_at.isoformat() + 'Z' if req.completed_at else None,
+                'signatureMode': 'docwallet_evidence',
+                'evidenceHash': req.final_hash,
+            }
+            http_req = urllib.request.Request(base_url, data=json.dumps(payload).encode('utf-8'), method='POST', headers={
+                'Content-Type': 'application/json',
+                'X-NexJud-Ecosystem-Key': key,
+                'User-Agent': 'DocWallet-NexJud-Bridge/1.0',
+            })
+            with urllib.request.urlopen(http_req, timeout=5) as response:
+                response.read()
+        except Exception as exc:
+            # Fail-open by design: legal signing remains authoritative in DocWallet.
+            try:
+                log('integration.nexjud.outcome_failed', req.user_id, 'signature', req.id, {'error': str(exc)[:220]})
+            except Exception:
+                pass
+
     @app.post('/api/sign/<code>/accept')
     def accept_signature(code):
         body = request.get_json(silent=True) or {}
@@ -419,6 +462,8 @@ def install_sign(app, db, auth_required, fail, log):
             req.final_hash = build_final_hash(req)
             db.session.add(SignatureEvent(request_id=req.id, event_type='request.completed', payload={'final_hash': req.final_hash, 'evidence_version': '1.2'}))
         db.session.commit()
+        if req.status == 'completed':
+            notify_nexjud_completed(req)
         parties = SignatureParty.query.filter_by(request_id=req.id).order_by(SignatureParty.id).all()
         next_party = SignatureParty.query.filter(SignatureParty.request_id == req.id, SignatureParty.status != 'signed').order_by(SignatureParty.id).first()
         return jsonify({'success': True, 'request': pack_request(req, parties), 'party': pack_party(party, public=True), 'next_party': pack_next_party(next_party)})
