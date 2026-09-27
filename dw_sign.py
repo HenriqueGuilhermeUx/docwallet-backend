@@ -350,7 +350,7 @@ def install_sign(app, db, auth_required, fail, log):
 
     def notify_nexjud_completed(req):
         """Best-effort closed-loop signal. Signature success never depends on NexJud."""
-        if (os.environ.get('NEXJUD_OUTCOME_EVENTS_ENABLED', 'false').lower() != 'true':
+        if os.environ.get('NEXJUD_OUTCOME_EVENTS_ENABLED', 'false').lower() != 'true':
             return
         base_url = (os.environ.get('NEXJUD_OUTCOME_INGEST_URL') or '').strip()
         key = (os.environ.get('NEXJUD_OUTCOME_INGEST_KEY') or '').strip()
