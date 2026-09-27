@@ -651,6 +651,9 @@ def install_intelligence(app, db, Document, auth_required, fail, log):
             created.append({"id": pid, "name": name, "email": email, "status": "pending", "code": code, "url": "/sign/" + code})
         if event_table is not None:
             db.session.execute(event_table.insert().values(id=str(uuid.uuid4()), request_id=request_id, party_id=None, event_type="request.created_from_document", payload={"document_id": document.id}, created_at=now))
+            nexjud_context = body.get("_nexjud_context") if isinstance(body.get("_nexjud_context"), dict) else None
+            if nexjud_context:
+                db.session.execute(event_table.insert().values(id=str(uuid.uuid4()), request_id=request_id, party_id=None, event_type="nexjud.context", payload=nexjud_context, created_at=now))
         make_alert(request.user.id, document.id, intel.id if intel else None, "signature.pending", "Assinaturas pendentes", f"{len(created)} assinatura(s) pendente(s) para este documento.", None, "warning", "signature_request", request_id)
         safe_audit("signature_request.created_from_document", request.user.id, "document", document.id, {"signature_request_id": request_id, "signers": len(created)})
         metric("signature_requests", request.user.id, 1, "document", document.id, {})
