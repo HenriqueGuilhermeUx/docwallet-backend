@@ -412,6 +412,11 @@ def install_nexoffice_bridge(app, db, User, Document, auth_required, fail, log):
         # request.get_json() is cached by Flask; mutating this dict keeps the existing
         # DocWallet intelligence route compatible without duplicating signature logic.
         body["parties"] = parties
+        nexjud = body.get("nexjud") if isinstance(body.get("nexjud"), dict) else {}
+        nexjud_user_id = str(nexjud.get("userId") or "").strip()
+        nexjud_case_id = str(nexjud.get("caseId") or "").strip()
+        if nexjud_user_id and nexjud_case_id:
+            body["_nexjud_context"] = {"nexjud_user_id": nexjud_user_id, "nexjud_case_id": nexjud_case_id, "document_ref": document.id}
         return run_idempotent(
             workspace_id,
             user.id,
