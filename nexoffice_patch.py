@@ -13,8 +13,19 @@ _dw_install_nexoffice_bridge(app, db, User, Document, require_auth, error_respon
 # END_DW_NEXOFFICE_INSTALL
 """
 
+upload_snippet = """
+
+# BEGIN_DW_NEXOFFICE_UPLOAD_INSTALL
+from dw_nexoffice_upload import install_nexoffice_upload_bridge as _dw_install_nexoffice_upload_bridge
+_dw_install_nexoffice_upload_bridge(app, db, User, Document, error_response, audit)
+# END_DW_NEXOFFICE_UPLOAD_INSTALL
+"""
+
 if 'BEGIN_DW_NEXOFFICE_INSTALL' not in text:
     text = text.replace('\n\nif __name__ == "__main__":', snippet + '\n\nif __name__ == "__main__":')
+
+if 'BEGIN_DW_NEXOFFICE_UPLOAD_INSTALL' not in text:
+    text = text.replace('\n\nif __name__ == "__main__":', upload_snippet + '\n\nif __name__ == "__main__":')
 
 # Runtime-only database switch. This keeps the original DATABASE_URL untouched
 # so rollback is immediate: USE_COMPACT_DATABASE=false returns to the old DB.
