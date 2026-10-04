@@ -25,7 +25,10 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile app.py dw_nexoffice.py nexoffice_patch.py dw_signed_document.py
+        run: python -m py_compile app.py dw_ocr.py dw_nexoffice.py nexoffice_patch.py dw_signed_document.py
+
+      - name: OCR extraction smoke
+        run: python tests/test_ocr_extraction.py
       - name: Apply runtime patches required by bridge
         run: |
           python sign_patch.py
