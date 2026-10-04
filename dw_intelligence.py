@@ -17,7 +17,7 @@ def install_intelligence(app, db, Document, auth_required, fail, log):
 
     from flask import jsonify, request
     from sqlalchemy import text
-    from dw_ocr import extract_document_text
+    from dw_ocr import extract_document_text, start_runtime_self_test
 
     ENABLED = os.environ.get("DOCUMENT_INTELLIGENCE_ENABLED", "true").lower() == "true"
     PROVIDER_NAME = os.environ.get("DOCUMENT_INTELLIGENCE_PROVIDER", "internal").lower().strip()
@@ -25,6 +25,8 @@ def install_intelligence(app, db, Document, auth_required, fail, log):
     ALLOW_EXTERNAL = os.environ.get("DOCUMENT_INTELLIGENCE_ALLOW_EXTERNAL", "false").lower() == "true"
 
     DOCUMENT_TYPES = {"CONTRACT", "NDA", "INVOICE", "RECEIPT", "IDENTITY", "CERTIFICATE", "POWER_OF_ATTORNEY", "CORPORATE_DOCUMENT", "LEGAL_DOCUMENT", "MEDICAL_DOCUMENT", "OTHER"}
+
+    start_runtime_self_test()
 
     class DocumentIntelligence(db.Model):
         __tablename__ = "document_intelligence"
