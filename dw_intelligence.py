@@ -17,6 +17,7 @@ def install_intelligence(app, db, Document, auth_required, fail, log):
 
     from flask import jsonify, request
     from sqlalchemy import text
+    from dw_ocr import extract_document_text
 
     ENABLED = os.environ.get("DOCUMENT_INTELLIGENCE_ENABLED", "true").lower() == "true"
     PROVIDER_NAME = os.environ.get("DOCUMENT_INTELLIGENCE_PROVIDER", "internal").lower().strip()
@@ -231,24 +232,6 @@ def install_intelligence(app, db, Document, auth_required, fail, log):
             db.session.execute(text("UPDATE documents SET lifecycle_status=:l, intelligence_status=:s, analyzed_at=:a WHERE id=:id AND user_id=:u"), {"l": lifecycle, "s": intel_status, "a": dt.datetime.utcnow(), "id": doc_id, "u": user_id})
         except Exception:
             db.session.rollback()
-
-    def read_text(document) -> str:
-        p = Path(document.file_path)
-        if not p.exists():
-            return ""
-        try:
-            if (document.file_type or "").startswith("text/") or p.suffix.lower() == ".txt":
-                return p.read_text(encoding="utf-8", errors="ignore")
-            if p.suffix.lower() == ".pdf" or document.file_type == "application/pdf":
-                try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(str(p))
-                    return "\n".join([(page.extract_text() or "") for page in reader.pages[:40]])
-                except Exception:
-                    return p.read_bytes()[:2_000_000].decode("latin-1", errors="ignore")
-            return p.read_bytes()[:1_000_000].decode("utf-8", errors="ignore")
-        except Exception:
-            return ""
 
     class DocumentExtractionProvider(ABC):
         name = "base"
@@ -545,9 +528,10 @@ def install_intelligence(app, db, Document, auth_required, fail, log):
         if not document:
             return fail("Documento não encontrado.", 404)
         update_doc_state(document.id, request.user.id, "processing", "processing")
-        raw = read_text(document)
         try:
-            result = provider().extract(document, raw)
+            text_extraction = extract_document_text(document)
+            result = provider().extract(document, text_extraction.text)
+            result.setdefault("metadata", {}).update(text_extraction.metadata())
             row = store(document, request.user.id, result)
             update_doc_state(document.id, request.user.id, "ready" if row.status == "ready" else "needs_review", row.status)
             db.session.commit()
