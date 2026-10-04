@@ -1,9 +1,12 @@
 import os
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
 from reportlab.pdfgen import canvas
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dw_ocr import extract_document_text
 
