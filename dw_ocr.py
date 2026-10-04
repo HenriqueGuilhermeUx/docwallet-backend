@@ -212,3 +212,60 @@ def extract_document_text(document: Any, paddle_factory: Optional[Callable[[], A
         if not fail_open:
             raise
         return TextExtractionResult(native_text, "native_pdf" if is_pdf else "image", "paddle_local", False, native_chars=native_chars, pages=pdf_pages, status="unavailable", reason="ocr_runtime_error", error=str(exc))
+
+
+def start_runtime_self_test(delay_seconds: float = 5.0) -> None:
+    """Run one non-blocking OCR probe when explicitly enabled.
+
+    Intended for homologation/runtime verification only. It never reads user
+    documents and is disabled by default.
+    """
+    if not _env_bool("DOCUMENT_OCR_SELF_TEST_ENABLED", False):
+        return
+
+    def _probe() -> None:
+        import tempfile
+        import time
+
+        time.sleep(max(0.0, delay_seconds))
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            with tempfile.TemporaryDirectory(prefix="docwallet-ocr-probe-") as tmp:
+                path = Path(tmp) / "probe.png"
+                image = Image.new("RGB", (1400, 420), "white")
+                draw = ImageDraw.Draw(image)
+                try:
+                    font = ImageFont.truetype(
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 72
+                    )
+                except Exception:
+                    font = ImageFont.load_default()
+                draw.text((60, 70), "CONTRATO DOCWALLET", fill="black", font=font)
+                draw.text((60, 190), "VALOR R$ 1.500,00", fill="black", font=font)
+                image.save(path)
+
+                document = type(
+                    "OCRProbeDocument",
+                    (),
+                    {"file_path": str(path), "file_type": "image/png"},
+                )()
+                result = extract_document_text(document)
+                expected = "DOCWALLET" in (result.text or "").upper()
+                if result.used_ocr and result.ocr_chars >= 10 and expected:
+                    print(
+                        "DocWallet OCR runtime probe: OK "
+                        f"provider={result.provider} chars={result.ocr_chars} "
+                        f"confidence={result.confidence}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "DocWallet OCR runtime probe: FAILED "
+                        f"metadata={result.metadata()} text={result.text[:120]!r}",
+                        flush=True,
+                    )
+        except Exception as exc:
+            print(f"DocWallet OCR runtime probe: ERROR {exc}", flush=True)
+
+    threading.Thread(target=_probe, name="docwallet-ocr-self-test", daemon=True).start()
