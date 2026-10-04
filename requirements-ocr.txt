@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Optional local OCR runtime for scanned PDFs and photos.
+# Keep separate from the core backend until the OCR runtime is validated on
+# the target Render instance; PaddlePaddle is memory-heavy.
+paddleocr==3.7.0
+paddlepaddle==3.2.0
