@@ -119,14 +119,22 @@ def _texts_scores(value: Dict[str, Any]) -> Tuple[List[str], List[float]]:
 
 def _build_pipeline():
     from paddleocr import PaddleOCR
-    return PaddleOCR(
-        lang=os.environ.get("DOCUMENT_OCR_LANGUAGE", "pt"),
-        ocr_version=os.environ.get("DOCUMENT_OCR_VERSION", "PP-OCRv6"),
-        device=os.environ.get("DOCUMENT_OCR_DEVICE", "cpu"),
-        use_doc_orientation_classify=_env_bool("DOCUMENT_OCR_USE_DOC_ORIENTATION", True),
-        use_doc_unwarping=_env_bool("DOCUMENT_OCR_USE_DOC_UNWARPING", False),
-        use_textline_orientation=_env_bool("DOCUMENT_OCR_USE_TEXTLINE_ORIENTATION", False),
-    )
+
+    kwargs: Dict[str, Any] = {
+        "lang": os.environ.get("DOCUMENT_OCR_LANGUAGE", "pt"),
+        "ocr_version": os.environ.get("DOCUMENT_OCR_VERSION", "PP-OCRv6"),
+        "device": os.environ.get("DOCUMENT_OCR_DEVICE", "cpu"),
+        "use_doc_orientation_classify": _env_bool("DOCUMENT_OCR_USE_DOC_ORIENTATION", True),
+        "use_doc_unwarping": _env_bool("DOCUMENT_OCR_USE_DOC_UNWARPING", False),
+        "use_textline_orientation": _env_bool("DOCUMENT_OCR_USE_TEXTLINE_ORIENTATION", False),
+    }
+    detection_model = os.environ.get("DOCUMENT_OCR_DETECTION_MODEL", "").strip()
+    recognition_model = os.environ.get("DOCUMENT_OCR_RECOGNITION_MODEL", "").strip()
+    if detection_model:
+        kwargs["text_detection_model_name"] = detection_model
+    if recognition_model:
+        kwargs["text_recognition_model_name"] = recognition_model
+    return PaddleOCR(**kwargs)
 
 
 def _pipeline(factory: Optional[Callable[[], Any]] = None):
