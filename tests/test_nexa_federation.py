@@ -1,11 +1,27 @@
 import os
+import runpy
+import sys
 import uuid
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 
 os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/docwallet-ci.db")
 os.environ.setdefault("UPLOAD_DIR", "/tmp/docwallet-uploads")
 os.environ.setdefault("JWT_SECRET", "ci-jwt-secret")
 
-import app as app_module
+ROOT = Path(__file__).resolve().parents[1]
+root_text = str(ROOT)
+if root_text not in sys.path:
+    sys.path.insert(0, root_text)
+
+runpy.run_path(str(ROOT / "fix_sqlalchemy.py"), run_name="__main__")
+
+spec = spec_from_file_location("_docwallet_nexa_federation_runtime", ROOT / "app.py")
+if spec is None or spec.loader is None:
+    raise RuntimeError("Could not load DocWallet app.py")
+app_module = module_from_spec(spec)
+sys.modules[spec.name] = app_module
+spec.loader.exec_module(app_module)
 
 
 def test_nexa_federation_disabled_by_default():
