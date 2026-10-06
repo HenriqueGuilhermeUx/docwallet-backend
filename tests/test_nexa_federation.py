@@ -58,3 +58,9 @@ def test_nexa_federation_provisions_and_reuses_local_account():
     finally:
         app_module.NEXA_SSO_ENABLED = original_enabled
         app_module.validate_nexa_sso_token = original_validator
+
+
+if __name__ == "__main__":
+    test_nexa_federation_disabled_by_default()
+    test_nexa_federation_provisions_and_reuses_local_account()
+    print("Nexa ID federation smoke: OK")
