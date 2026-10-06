@@ -9,6 +9,10 @@ import hashlib
 import os
 import re
 import uuid
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -45,6 +49,10 @@ ALLOWED_MIMES = {
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-docwallet-change-me")
 JWT_EXPIRES_HOURS = int(os.environ.get("JWT_EXPIRES_HOURS", "168"))
+
+NEXA_API_URL = os.environ.get("NEXA_API_URL", "https://nexa-backend-p2u0.onrender.com/api/v1").rstrip("/")
+NEXA_SSO_ENABLED = os.environ.get("NEXA_SSO_ENABLED", "false").lower() == "true"
+NEXA_SSO_TIMEOUT_SECONDS = int(os.environ.get("NEXA_SSO_TIMEOUT_SECONDS", "10"))
 
 DOCWALLET_TREASURY_ADDRESS = os.environ.get("DOCWALLET_TREASURY_ADDRESS", "").strip()
 DOCWALLET_CHAIN_ID = int(os.environ.get("DOCWALLET_CHAIN_ID", "137"))
@@ -481,6 +489,99 @@ def login():
 
     audit("auth.login", user.id, "user", user.id)
     return jsonify({"success": True, "token": create_token(user), "user": user_to_dict(user)})
+
+
+def validate_nexa_sso_token(token: str) -> Dict[str, Any]:
+    if not NEXA_SSO_ENABLED:
+        raise RuntimeError("Nexa ID federation is disabled")
+
+    encoded = urllib.parse.quote(token, safe="")
+    url = f"{NEXA_API_URL}/nexa-id/validate/{encoded}"
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "DocWallet-Nexa-Federation/1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=NEXA_SSO_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"Nexa ID validation failed with status {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise ConnectionError("Nexa ID validation service unavailable") from exc
+
+    if payload.get("success") is not True or not isinstance(payload.get("user"), dict):
+        raise ValueError("Nexa ID token is invalid or expired")
+
+    return payload["user"]
+
+
+@app.post("/api/auth/nexa")
+def login_with_nexa():
+    if not NEXA_SSO_ENABLED:
+        return error_response("Integração Nexa ID ainda não está habilitada.", 503)
+
+    data = request.get_json(silent=True) or {}
+    token = (data.get("token") or "").strip()
+    if not token:
+        return error_response("Token Nexa ID é obrigatório.", 400)
+
+    try:
+        nexa_user = validate_nexa_sso_token(token)
+    except ValueError as exc:
+        return error_response(str(exc), 401)
+    except ConnectionError:
+        return error_response("Não foi possível validar o Nexa ID agora.", 502)
+
+    email = str(nexa_user.get("email") or "").strip().lower()
+    name = str(nexa_user.get("fullName") or nexa_user.get("name") or "").strip()
+    nexa_user_id = str(nexa_user.get("id") or "").strip()
+    nexa_id = str(nexa_user.get("nexaId") or "").strip()
+
+    if not email or not nexa_user_id:
+        return error_response("Nexa ID não retornou identidade suficiente.", 401)
+
+    user = User.query.filter_by(email=email).first()
+    created = False
+    if not user:
+        user = User(
+            name=name or email.split("@", 1)[0],
+            email=email,
+            password_hash=hash_password(f"nexa-federated-{uuid.uuid4().hex}"),
+        )
+        db.session.add(user)
+        db.session.commit()
+        created = True
+    elif name and user.name != name:
+        user.name = name
+        db.session.commit()
+
+    audit(
+        "auth.nexa",
+        user.id,
+        "user",
+        user.id,
+        {
+            "nexa_user_id": nexa_user_id,
+            "nexa_id": nexa_id or None,
+            "created": created,
+        },
+    )
+
+    return jsonify({
+        "success": True,
+        "token": create_token(user),
+        "user": user_to_dict(user),
+        "federation": {
+            "source": "nexa",
+            "nexa_user_id": nexa_user_id,
+            "nexa_id": nexa_id or None,
+        },
+    })
 
 
 @app.get("/api/auth/me")
