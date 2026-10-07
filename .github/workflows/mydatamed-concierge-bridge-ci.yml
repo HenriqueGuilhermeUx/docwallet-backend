@@ -1,0 +1,39 @@
+name: MyDataMed Concierge Bridge CI
+
+on:
+  push:
+    branches:
+      - feature/mydatamed-concierge-bridge-v1
+  pull_request:
+    paths:
+      - 'dw_mydatamed_concierge.py'
+      - 'dw_sign.py'
+      - 'dw_signature_identity.py'
+      - 'mydatamed_patch.py'
+      - 'render.yaml'
+      - '.github/workflows/mydatamed-concierge-bridge-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile bridge files
+        run: python -m py_compile dw_mydatamed_concierge.py dw_sign.py dw_signature_identity.py mydatamed_patch.py
+      - name: Contract checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MYDATAMED_SERVICE_KEY' dw_mydatamed_concierge.py
+          grep -q 'X-Idempotency-Key' dw_mydatamed_concierge.py
+          grep -q 'verified_evidence_required' dw_mydatamed_concierge.py
+          grep -q 'requires_verified_evidence' dw_sign.py
+          grep -q "'required': required" dw_signature_identity.py
+          grep -q 'python mydatamed_patch.py' render.yaml
