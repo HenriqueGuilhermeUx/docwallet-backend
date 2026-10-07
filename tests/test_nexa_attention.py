@@ -31,19 +31,22 @@ def test_attention_requires_service_key():
     client = app_module.app.test_client()
     response = client.get(
         "/api/nexa/attention",
-        headers={"X-Nexa-User-Email": "nobody@example.test"},
+        headers={"X-Nexa-User-ID": "nexa-nobody"},
     )
     assert response.status_code == 401
 
 
 def test_attention_returns_only_sanitized_signature_summary():
     email = f"attention-{uuid.uuid4().hex[:10]}@example.test"
+    nexa_user_id = f"nexa-{uuid.uuid4()}"
 
     with app_module.app.app_context():
         user = app_module.User(
             name="Attention Test",
             email=email,
             password_hash=app_module.hash_password("test-password"),
+            nexa_user_id=nexa_user_id,
+            nexa_id="NEXA-ATTENTION",
         )
         app_module.db.session.add(user)
         app_module.db.session.commit()
@@ -91,7 +94,7 @@ def test_attention_returns_only_sanitized_signature_summary():
         "/api/nexa/attention",
         headers={
             "Authorization": "Bearer ci-attention-key",
-            "X-Nexa-User-Email": email,
+            "X-Nexa-User-ID": nexa_user_id,
         },
     )
     assert response.status_code == 200
