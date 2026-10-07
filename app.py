@@ -6,6 +6,7 @@ Preparado para Render + PostgreSQL.
 
 import datetime as dt
 import hashlib
+import hmac
 import os
 import re
 import uuid
@@ -543,7 +544,10 @@ def require_nexa_attention_service():
 
 
 def crypto_safe_compare(left: str, right: str) -> bool:
-    return hashlib.sha256(left.encode("utf-8")).digest() == hashlib.sha256(right.encode("utf-8")).digest()
+    return hmac.compare_digest(
+        hashlib.sha256(left.encode("utf-8")).digest(),
+        hashlib.sha256(right.encode("utf-8")).digest(),
+    )
 
 
 @app.get("/api/nexa/attention")
