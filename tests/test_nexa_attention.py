@@ -9,7 +9,6 @@ os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/docwallet-ci.db")
 os.environ.setdefault("UPLOAD_DIR", "/tmp/docwallet-uploads")
 os.environ.setdefault("JWT_SECRET", "ci-jwt-secret")
 os.environ["NEXA_ECOSYSTEM_ATTENTION_ENABLED"] = "true"
-os.environ["NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY"] = "ci-attention-key"
 
 ROOT = Path(__file__).resolve().parents[1]
 root_text = str(ROOT)
@@ -89,14 +88,23 @@ def test_attention_returns_only_sanitized_signature_summary():
         )
         app_module.db.session.commit()
 
+    original_validator = app_module.validate_nexa_staff_token
+    app_module.validate_nexa_staff_token = lambda token: {
+        "userId": nexa_user_id,
+        "source": "nexa",
+    }
+
     client = app_module.app.test_client()
-    response = client.get(
-        "/api/nexa/attention",
-        headers={
-            "Authorization": "Bearer ci-attention-key",
-            "X-Nexa-User-ID": nexa_user_id,
-        },
-    )
+    try:
+        response = client.get(
+            "/api/nexa/attention",
+            headers={
+                "Authorization": "Bearer ci-staff-token",
+                "X-Nexa-User-ID": nexa_user_id,
+            },
+        )
+    finally:
+        app_module.validate_nexa_staff_token = original_validator
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["success"] is True
