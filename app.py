@@ -92,6 +92,8 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     plan = db.Column(db.String(40), nullable=False, default="free")
+    nexa_user_id = db.Column(db.String(80), nullable=True, unique=True, index=True)
+    nexa_id = db.Column(db.String(120), nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=dt.datetime.utcnow, nullable=False)
 
 
@@ -170,12 +172,19 @@ class AuditLog(db.Model):
 
 with app.app_context():
     db.create_all()
-    try:
-        db.session.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_user_hash ON documents(user_id, file_hash)"))
-        db.session.execute(text("CREATE INDEX IF NOT EXISTS idx_certificates_hash_status ON certificates(file_hash, status)"))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
+    for migration_sql in [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS nexa_user_id VARCHAR(80)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS nexa_id VARCHAR(120)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nexa_user_id ON users(nexa_user_id) WHERE nexa_user_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_users_nexa_id ON users(nexa_id)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_user_hash ON documents(user_id, file_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_certificates_hash_status ON certificates(file_hash, status)",
+    ]:
+        try:
+            db.session.execute(text(migration_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
 
 def now_iso() -> str:
@@ -556,11 +565,11 @@ def nexa_attention():
     if denied:
         return denied
 
-    email = (request.headers.get("X-Nexa-User-Email") or "").strip().lower()
-    if not email or "@" not in email or len(email) > 254:
+    nexa_user_id = (request.headers.get("X-Nexa-User-ID") or "").strip()
+    if not nexa_user_id or len(nexa_user_id) > 120:
         return error_response("Identidade Nexa inválida.", 400)
 
-    user = User.query.filter(db.func.lower(User.email) == email).first()
+    user = User.query.filter_by(nexa_user_id=nexa_user_id).first()
     if not user:
         return jsonify({
             "success": True,
@@ -597,7 +606,7 @@ def nexa_attention():
                 ORDER BY created_at DESC
                 """
             ),
-            {"email": email, "user_id": user.id},
+            {"email": user.email.lower(), "user_id": user.id},
         ).fetchall()
 
         pending_count = len(rows)
@@ -661,20 +670,37 @@ def login_with_nexa():
     if not email or not nexa_user_id:
         return error_response("Nexa ID não retornou identidade suficiente.", 401)
 
-    user = User.query.filter_by(email=email).first()
+    user = User.query.filter_by(nexa_user_id=nexa_user_id).first()
     created = False
+
     if not user:
+        existing_email_user = User.query.filter_by(email=email).first()
+        if existing_email_user:
+            return error_response(
+                "Já existe uma conta DocWallet com este e-mail. Entre nela uma vez para vincular seu Nexa ID com segurança.",
+                409,
+            )
+
         user = User(
             name=name or email.split("@", 1)[0],
             email=email,
             password_hash=hash_password(f"nexa-federated-{uuid.uuid4().hex}"),
+            nexa_user_id=nexa_user_id,
+            nexa_id=nexa_id or None,
         )
         db.session.add(user)
         db.session.commit()
         created = True
-    elif name and user.name != name:
-        user.name = name
-        db.session.commit()
+    else:
+        changed = False
+        if nexa_id and user.nexa_id != nexa_id:
+            user.nexa_id = nexa_id
+            changed = True
+        if name and user.name != name:
+            user.name = name
+            changed = True
+        if changed:
+            db.session.commit()
 
     audit(
         "auth.nexa",
