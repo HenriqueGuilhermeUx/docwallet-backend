@@ -168,11 +168,19 @@ def install_signature_identity(app, db, fail, log):
         if not party:
             return fail('Link de assinatura não encontrado.', 404)
         identity = party['identity_verification'] or {}
+        required = db.session.execute(text('''
+            SELECT 1
+              FROM signature_events
+             WHERE request_id = :request_id
+               AND event_type = 'policy.verified_evidence_required'
+             LIMIT 1
+        '''), {'request_id': party['request_id']}).first() is not None
         return jsonify({
             'success': True,
             'emailAvailable': bool(party['email']),
             'maskedEmail': _mask_email(party['email']),
             'verified': bool(identity.get('verified_at')),
+            'required': required,
             'method': identity.get('method'),
             'verifiedAt': identity.get('verified_at'),
             'evidenceLevel': 'verified_evidence' if identity.get('verified_at') else 'reinforced_evidence',
