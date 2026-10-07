@@ -54,6 +54,9 @@ NEXA_API_URL = os.environ.get("NEXA_API_URL", "https://nexa-backend-p2u0.onrende
 NEXA_SSO_ENABLED = os.environ.get("NEXA_SSO_ENABLED", "false").lower() == "true"
 NEXA_SSO_TIMEOUT_SECONDS = int(os.environ.get("NEXA_SSO_TIMEOUT_SECONDS", "10"))
 
+NEXA_ECOSYSTEM_ATTENTION_ENABLED = os.environ.get("NEXA_ECOSYSTEM_ATTENTION_ENABLED", "false").lower() == "true"
+NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY = os.environ.get("NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY", "").strip()
+
 DOCWALLET_TREASURY_ADDRESS = os.environ.get("DOCWALLET_TREASURY_ADDRESS", "").strip()
 DOCWALLET_CHAIN_ID = int(os.environ.get("DOCWALLET_CHAIN_ID", "137"))
 DOCWALLET_NETWORK_NAME = os.environ.get("DOCWALLET_NETWORK_NAME", "Polygon")
@@ -518,6 +521,111 @@ def validate_nexa_sso_token(token: str) -> Dict[str, Any]:
         raise ValueError("Nexa ID token is invalid or expired")
 
     return payload["user"]
+
+
+def require_nexa_attention_service():
+    if not NEXA_ECOSYSTEM_ATTENTION_ENABLED:
+        return error_response("Integração de atenção Nexa ainda não está habilitada.", 503)
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return error_response("Credencial de serviço ausente.", 401)
+
+    provided = auth.replace("Bearer ", "", 1).strip()
+    if (
+        not NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY
+        or not provided
+        or not crypto_safe_compare(provided, NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY)
+    ):
+        return error_response("Credencial de serviço inválida.", 401)
+
+    return None
+
+
+def crypto_safe_compare(left: str, right: str) -> bool:
+    return hashlib.sha256(left.encode("utf-8")).digest() == hashlib.sha256(right.encode("utf-8")).digest()
+
+
+@app.get("/api/nexa/attention")
+def nexa_attention():
+    denied = require_nexa_attention_service()
+    if denied:
+        return denied
+
+    email = (request.headers.get("X-Nexa-User-Email") or "").strip().lower()
+    if not email or "@" not in email or len(email) > 254:
+        return error_response("Identidade Nexa inválida.", 400)
+
+    user = User.query.filter(db.func.lower(User.email) == email).first()
+    if not user:
+        return jsonify({
+            "success": True,
+            "enabled": True,
+            "source": "docwallet",
+            "mode": "read_only_minimum_context",
+            "items": [],
+            "sensitivePayloadIncluded": False,
+        })
+
+    pending_count = 0
+    latest_created_at = None
+
+    try:
+        rows = db.session.execute(
+            text(
+                """
+                SELECT request_id, created_at
+                FROM (
+                    SELECT DISTINCT sp.request_id AS request_id, sr.created_at AS created_at
+                    FROM signature_parties sp
+                    JOIN signature_requests sr ON sr.id = sp.request_id
+                    WHERE LOWER(COALESCE(sp.email, '')) = :email
+                      AND COALESCE(sp.status, 'pending') <> 'signed'
+                      AND COALESCE(sr.status, 'pending') <> 'completed'
+
+                    UNION
+
+                    SELECT sr.id AS request_id, sr.created_at AS created_at
+                    FROM signature_requests sr
+                    WHERE sr.user_id = :user_id
+                      AND COALESCE(sr.status, 'pending') <> 'completed'
+                ) pending
+                ORDER BY created_at DESC
+                """
+            ),
+            {"email": email, "user_id": user.id},
+        ).fetchall()
+
+        pending_count = len(rows)
+        if rows:
+            latest_created_at = rows[0][1]
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.warning("Nexa attention signature query unavailable: %s", type(exc).__name__)
+
+    items = []
+    if pending_count > 0:
+        items.append({
+            "id": "docwallet-signature-pending",
+            "kind": "document.signature.pending",
+            "title": "Assinatura pendente",
+            "summary": (
+                "Há 1 assinatura aguardando sua atenção no DocWallet."
+                if pending_count == 1
+                else f"Há {pending_count} assinaturas aguardando sua atenção no DocWallet."
+            ),
+            "dueAt": latest_created_at.isoformat() + "Z" if latest_created_at else None,
+            "count": pending_count,
+        })
+
+    return jsonify({
+        "success": True,
+        "enabled": True,
+        "source": "docwallet",
+        "mode": "read_only_minimum_context",
+        "items": items,
+        "sensitivePayloadIncluded": False,
+    })
 
 
 @app.post("/api/auth/nexa")
