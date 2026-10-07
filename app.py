@@ -56,7 +56,6 @@ NEXA_SSO_ENABLED = os.environ.get("NEXA_SSO_ENABLED", "false").lower() == "true"
 NEXA_SSO_TIMEOUT_SECONDS = int(os.environ.get("NEXA_SSO_TIMEOUT_SECONDS", "10"))
 
 NEXA_ECOSYSTEM_ATTENTION_ENABLED = os.environ.get("NEXA_ECOSYSTEM_ATTENTION_ENABLED", "false").lower() == "true"
-NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY = os.environ.get("NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY", "").strip()
 
 DOCWALLET_TREASURY_ADDRESS = os.environ.get("DOCWALLET_TREASURY_ADDRESS", "").strip()
 DOCWALLET_CHAIN_ID = int(os.environ.get("DOCWALLET_CHAIN_ID", "137"))
@@ -533,41 +532,75 @@ def validate_nexa_sso_token(token: str) -> Dict[str, Any]:
     return payload["user"]
 
 
-def require_nexa_attention_service():
+def validate_nexa_staff_token(token: str) -> Dict[str, Any]:
+    url = f"{NEXA_API_URL}/staff/validate-token"
+    body = json.dumps({"token": token}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "DocWallet-Nexa-Attention/1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=NEXA_SSO_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"Nexa Staff validation failed with status {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise ConnectionError("Nexa Staff validation service unavailable") from exc
+
+    if payload.get("valid") is not True or not isinstance(payload.get("user"), dict):
+        raise ValueError("Nexa Staff token is invalid or expired")
+
+    return payload["user"]
+
+
+def require_nexa_attention_service(nexa_user_id: str):
     if not NEXA_ECOSYSTEM_ATTENTION_ENABLED:
         return error_response("Integração de atenção Nexa ainda não está habilitada.", 503)
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return error_response("Credencial de serviço ausente.", 401)
+        return error_response("Token Staff ausente.", 401)
 
-    provided = auth.replace("Bearer ", "", 1).strip()
-    if (
-        not NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY
-        or not provided
-        or not crypto_safe_compare(provided, NEXA_ECOSYSTEM_ATTENTION_SERVICE_KEY)
-    ):
-        return error_response("Credencial de serviço inválida.", 401)
+    token = auth.replace("Bearer ", "", 1).strip()
+    if not token:
+        return error_response("Token Staff ausente.", 401)
+
+    try:
+        staff_user = validate_nexa_staff_token(token)
+    except ValueError:
+        return error_response("Token Staff inválido ou expirado.", 401)
+    except ConnectionError:
+        return error_response("Não foi possível validar o Staff agora.", 502)
+
+    validated_user_id = str(
+        staff_user.get("userId")
+        or staff_user.get("id")
+        or staff_user.get("sub")
+        or ""
+    ).strip()
+
+    if validated_user_id != nexa_user_id:
+        return error_response("Identidade Staff não corresponde ao usuário Nexa.", 401)
 
     return None
 
 
-def crypto_safe_compare(left: str, right: str) -> bool:
-    return hmac.compare_digest(
-        hashlib.sha256(left.encode("utf-8")).digest(),
-        hashlib.sha256(right.encode("utf-8")).digest(),
-    )
-
-
 @app.get("/api/nexa/attention")
 def nexa_attention():
-    denied = require_nexa_attention_service()
-    if denied:
-        return denied
-
     nexa_user_id = (request.headers.get("X-Nexa-User-ID") or "").strip()
     if not nexa_user_id or len(nexa_user_id) > 120:
         return error_response("Identidade Nexa inválida.", 400)
+
+    denied = require_nexa_attention_service(nexa_user_id)
+    if denied:
+        return denied
 
     user = User.query.filter_by(nexa_user_id=nexa_user_id).first()
     if not user:
