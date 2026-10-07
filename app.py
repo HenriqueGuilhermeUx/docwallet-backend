@@ -6,9 +6,14 @@ Preparado para Render + PostgreSQL.
 
 import datetime as dt
 import hashlib
+import hmac
 import os
 import re
 import uuid
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -46,6 +51,12 @@ ALLOWED_MIMES = {
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-docwallet-change-me")
 JWT_EXPIRES_HOURS = int(os.environ.get("JWT_EXPIRES_HOURS", "168"))
 
+NEXA_API_URL = os.environ.get("NEXA_API_URL", "https://nexa-backend-p2u0.onrender.com/api/v1").rstrip("/")
+NEXA_SSO_ENABLED = os.environ.get("NEXA_SSO_ENABLED", "false").lower() == "true"
+NEXA_SSO_TIMEOUT_SECONDS = int(os.environ.get("NEXA_SSO_TIMEOUT_SECONDS", "10"))
+
+NEXA_ECOSYSTEM_ATTENTION_ENABLED = os.environ.get("NEXA_ECOSYSTEM_ATTENTION_ENABLED", "false").lower() == "true"
+
 DOCWALLET_TREASURY_ADDRESS = os.environ.get("DOCWALLET_TREASURY_ADDRESS", "").strip()
 DOCWALLET_CHAIN_ID = int(os.environ.get("DOCWALLET_CHAIN_ID", "137"))
 DOCWALLET_NETWORK_NAME = os.environ.get("DOCWALLET_NETWORK_NAME", "Polygon")
@@ -80,6 +91,8 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     plan = db.Column(db.String(40), nullable=False, default="free")
+    nexa_user_id = db.Column(db.String(80), nullable=True, unique=True, index=True)
+    nexa_id = db.Column(db.String(120), nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=dt.datetime.utcnow, nullable=False)
 
 
@@ -158,12 +171,19 @@ class AuditLog(db.Model):
 
 with app.app_context():
     db.create_all()
-    try:
-        db.session.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_user_hash ON documents(user_id, file_hash)"))
-        db.session.execute(text("CREATE INDEX IF NOT EXISTS idx_certificates_hash_status ON certificates(file_hash, status)"))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
+    for migration_sql in [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS nexa_user_id VARCHAR(80)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS nexa_id VARCHAR(120)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nexa_user_id ON users(nexa_user_id) WHERE nexa_user_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_users_nexa_id ON users(nexa_id)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_user_hash ON documents(user_id, file_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_certificates_hash_status ON certificates(file_hash, status)",
+    ]:
+        try:
+            db.session.execute(text(migration_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
 
 def now_iso() -> str:
@@ -481,6 +501,262 @@ def login():
 
     audit("auth.login", user.id, "user", user.id)
     return jsonify({"success": True, "token": create_token(user), "user": user_to_dict(user)})
+
+
+def validate_nexa_sso_token(token: str) -> Dict[str, Any]:
+    if not NEXA_SSO_ENABLED:
+        raise RuntimeError("Nexa ID federation is disabled")
+
+    encoded = urllib.parse.quote(token, safe="")
+    url = f"{NEXA_API_URL}/nexa-id/validate/{encoded}"
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "DocWallet-Nexa-Federation/1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=NEXA_SSO_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"Nexa ID validation failed with status {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise ConnectionError("Nexa ID validation service unavailable") from exc
+
+    if payload.get("success") is not True or not isinstance(payload.get("user"), dict):
+        raise ValueError("Nexa ID token is invalid or expired")
+
+    return payload["user"]
+
+
+def validate_nexa_staff_token(token: str) -> Dict[str, Any]:
+    url = f"{NEXA_API_URL}/staff/validate-token"
+    body = json.dumps({"token": token}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "DocWallet-Nexa-Attention/1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=NEXA_SSO_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"Nexa Staff validation failed with status {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise ConnectionError("Nexa Staff validation service unavailable") from exc
+
+    if payload.get("valid") is not True or not isinstance(payload.get("user"), dict):
+        raise ValueError("Nexa Staff token is invalid or expired")
+
+    return payload["user"]
+
+
+def require_nexa_attention_service(nexa_user_id: str):
+    if not NEXA_ECOSYSTEM_ATTENTION_ENABLED:
+        return error_response("Integração de atenção Nexa ainda não está habilitada.", 503)
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return error_response("Token Staff ausente.", 401)
+
+    token = auth.replace("Bearer ", "", 1).strip()
+    if not token:
+        return error_response("Token Staff ausente.", 401)
+
+    try:
+        staff_user = validate_nexa_staff_token(token)
+    except ValueError:
+        return error_response("Token Staff inválido ou expirado.", 401)
+    except ConnectionError:
+        return error_response("Não foi possível validar o Staff agora.", 502)
+
+    validated_user_id = str(
+        staff_user.get("userId")
+        or staff_user.get("id")
+        or staff_user.get("sub")
+        or ""
+    ).strip()
+
+    if validated_user_id != nexa_user_id:
+        return error_response("Identidade Staff não corresponde ao usuário Nexa.", 401)
+
+    return None
+
+
+@app.get("/api/nexa/attention")
+def nexa_attention():
+    nexa_user_id = (request.headers.get("X-Nexa-User-ID") or "").strip()
+    if not nexa_user_id or len(nexa_user_id) > 120:
+        return error_response("Identidade Nexa inválida.", 400)
+
+    denied = require_nexa_attention_service(nexa_user_id)
+    if denied:
+        return denied
+
+    user = User.query.filter_by(nexa_user_id=nexa_user_id).first()
+    if not user:
+        return jsonify({
+            "success": True,
+            "enabled": True,
+            "source": "docwallet",
+            "mode": "read_only_minimum_context",
+            "items": [],
+            "sensitivePayloadIncluded": False,
+        })
+
+    pending_count = 0
+    latest_created_at = None
+
+    try:
+        rows = db.session.execute(
+            text(
+                """
+                SELECT request_id, created_at
+                FROM (
+                    SELECT DISTINCT sp.request_id AS request_id, sr.created_at AS created_at
+                    FROM signature_parties sp
+                    JOIN signature_requests sr ON sr.id = sp.request_id
+                    WHERE LOWER(COALESCE(sp.email, '')) = :email
+                      AND COALESCE(sp.status, 'pending') <> 'signed'
+                      AND COALESCE(sr.status, 'pending') <> 'completed'
+
+                    UNION
+
+                    SELECT sr.id AS request_id, sr.created_at AS created_at
+                    FROM signature_requests sr
+                    WHERE sr.user_id = :user_id
+                      AND COALESCE(sr.status, 'pending') <> 'completed'
+                ) pending
+                ORDER BY created_at DESC
+                """
+            ),
+            {"email": user.email.lower(), "user_id": user.id},
+        ).fetchall()
+
+        pending_count = len(rows)
+        if rows:
+            latest_created_at = rows[0][1]
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.warning("Nexa attention signature query unavailable: %s", type(exc).__name__)
+
+    items = []
+    if pending_count > 0:
+        items.append({
+            "id": "docwallet-signature-pending",
+            "kind": "document.signature.pending",
+            "title": "Assinatura pendente",
+            "summary": (
+                "Há 1 assinatura aguardando sua atenção no DocWallet."
+                if pending_count == 1
+                else f"Há {pending_count} assinaturas aguardando sua atenção no DocWallet."
+            ),
+            "dueAt": (
+                latest_created_at.isoformat() + "Z"
+                if hasattr(latest_created_at, "isoformat")
+                else str(latest_created_at)
+            ) if latest_created_at else None,
+            "count": pending_count,
+        })
+
+    return jsonify({
+        "success": True,
+        "enabled": True,
+        "source": "docwallet",
+        "mode": "read_only_minimum_context",
+        "items": items,
+        "sensitivePayloadIncluded": False,
+    })
+
+
+@app.post("/api/auth/nexa")
+def login_with_nexa():
+    if not NEXA_SSO_ENABLED:
+        return error_response("Integração Nexa ID ainda não está habilitada.", 503)
+
+    data = request.get_json(silent=True) or {}
+    token = (data.get("token") or "").strip()
+    if not token:
+        return error_response("Token Nexa ID é obrigatório.", 400)
+
+    try:
+        nexa_user = validate_nexa_sso_token(token)
+    except ValueError as exc:
+        return error_response(str(exc), 401)
+    except ConnectionError:
+        return error_response("Não foi possível validar o Nexa ID agora.", 502)
+
+    email = str(nexa_user.get("email") or "").strip().lower()
+    name = str(nexa_user.get("fullName") or nexa_user.get("name") or "").strip()
+    nexa_user_id = str(nexa_user.get("id") or "").strip()
+    nexa_id = str(nexa_user.get("nexaId") or "").strip()
+
+    if not email or not nexa_user_id:
+        return error_response("Nexa ID não retornou identidade suficiente.", 401)
+
+    user = User.query.filter_by(nexa_user_id=nexa_user_id).first()
+    created = False
+
+    if not user:
+        existing_email_user = User.query.filter_by(email=email).first()
+        if existing_email_user:
+            return error_response(
+                "Já existe uma conta DocWallet com este e-mail. Entre nela uma vez para vincular seu Nexa ID com segurança.",
+                409,
+            )
+
+        user = User(
+            name=name or email.split("@", 1)[0],
+            email=email,
+            password_hash=hash_password(f"nexa-federated-{uuid.uuid4().hex}"),
+            nexa_user_id=nexa_user_id,
+            nexa_id=nexa_id or None,
+        )
+        db.session.add(user)
+        db.session.commit()
+        created = True
+    else:
+        changed = False
+        if nexa_id and user.nexa_id != nexa_id:
+            user.nexa_id = nexa_id
+            changed = True
+        if name and user.name != name:
+            user.name = name
+            changed = True
+        if changed:
+            db.session.commit()
+
+    audit(
+        "auth.nexa",
+        user.id,
+        "user",
+        user.id,
+        {
+            "nexa_user_id": nexa_user_id,
+            "nexa_id": nexa_id or None,
+            "created": created,
+        },
+    )
+
+    return jsonify({
+        "success": True,
+        "token": create_token(user),
+        "user": user_to_dict(user),
+        "federation": {
+            "source": "nexa",
+            "nexa_user_id": nexa_user_id,
+            "nexa_id": nexa_id or None,
+        },
+    })
 
 
 @app.get("/api/auth/me")
