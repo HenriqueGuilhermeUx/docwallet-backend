@@ -618,7 +618,11 @@ def nexa_attention():
                 if pending_count == 1
                 else f"Há {pending_count} assinaturas aguardando sua atenção no DocWallet."
             ),
-            "dueAt": latest_created_at.isoformat() + "Z" if latest_created_at else None,
+            "dueAt": (
+                latest_created_at.isoformat() + "Z"
+                if hasattr(latest_created_at, "isoformat")
+                else str(latest_created_at)
+            ) if latest_created_at else None,
             "count": pending_count,
         })
 
