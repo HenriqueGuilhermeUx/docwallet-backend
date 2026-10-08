@@ -47,3 +47,73 @@ if os.environ.get('MYDATAMED_BOOTSTRAP_OWNER', 'false').lower() == 'true':
             print('DocWallet MyDataMed homolog owner bootstrapped.')
         else:
             print('DocWallet MyDataMed homolog owner already present.')
+
+# Internal smoke test for isolated homologation only. It exercises the real
+# service-to-service decorators and routes without exposing the service key.
+if os.environ.get('MYDATAMED_SMOKE_TEST', 'false').lower() == 'true':
+    from app import app
+
+    service_key = os.environ.get('MYDATAMED_SERVICE_KEY', '').strip()
+    if not service_key:
+        raise RuntimeError('MYDATAMED_SERVICE_KEY required for smoke test')
+
+    headers = {'X-MyDataMed-Key': service_key}
+    client = app.test_client()
+
+    health = client.get('/api/internal/mydatamed/concierge/health', headers=headers)
+    health_body = health.get_json(silent=True) or {}
+    if health.status_code != 200 or not health_body.get('configured'):
+        raise RuntimeError(
+            f'MyDataMed bridge health smoke failed: status={health.status_code} body={health_body}'
+        )
+
+    smoke_payload = {
+        'documentType': 'combined_onboarding',
+        'externalReference': 'homolog-smoke-v1',
+        'title': 'MyDataMed Concierge Homolog Smoke',
+        'content': (
+            'Documento técnico de homologação do MyDataMed Concierge para validar '
+            'criação de solicitação, política de evidência verificada, idempotência '
+            'e consulta de status no bridge DocWallet. Não possui efeito contratual.'
+        ),
+        'signer': {
+            'name': 'MyDataMed Concierge Homolog',
+            'email': 'concierge-homolog-smoke@internal.invalid',
+        },
+    }
+    create_headers = {
+        **headers,
+        'X-Idempotency-Key': 'mydatamed-render-homolog-smoke-v1',
+    }
+    created = client.post(
+        '/api/internal/mydatamed/concierge/signatures',
+        headers=create_headers,
+        json=smoke_payload,
+    )
+    created_body = created.get_json(silent=True) or {}
+    request_id = str((created_body.get('request') or {}).get('id') or '')
+    if (
+        created.status_code not in (200, 201)
+        or not created_body.get('success')
+        or created_body.get('requiredEvidence') != 'verified_evidence'
+        or not request_id
+    ):
+        raise RuntimeError(
+            f'MyDataMed bridge create smoke failed: status={created.status_code} body={created_body}'
+        )
+
+    status = client.get(
+        f'/api/internal/mydatamed/concierge/signatures/{request_id}',
+        headers=headers,
+    )
+    status_body = status.get_json(silent=True) or {}
+    returned_id = str((status_body.get('request') or {}).get('id') or '')
+    if status.status_code != 200 or not status_body.get('success') or returned_id != request_id:
+        raise RuntimeError(
+            f'MyDataMed bridge status smoke failed: status={status.status_code} body={status_body}'
+        )
+
+    print(
+        'DocWallet MyDataMed bridge smoke test PASS: '
+        'health/create/status + verified_evidence.'
+    )
