@@ -134,6 +134,25 @@ def install_mydatamed_concierge_bridge(app, db, User, fail, log):
         db.session.commit()
         return jsonify(payload), status
 
+    def add_signature_event(request_id, event_type, payload):
+        params = {
+            "id": str(uuid.uuid4()),
+            "request_id": request_id,
+            "event_type": event_type,
+            "payload": json.dumps(payload, ensure_ascii=False),
+        }
+        if db.engine.dialect.name == "postgresql":
+            statement = text("""
+                INSERT INTO signature_events (id, request_id, event_type, payload, created_at)
+                VALUES (:id, :request_id, :event_type, CAST(:payload AS jsonb), NOW())
+            """)
+        else:
+            statement = text("""
+                INSERT INTO signature_events (id, request_id, event_type, payload, created_at)
+                VALUES (:id, :request_id, :event_type, :payload, CURRENT_TIMESTAMP)
+            """)
+        db.session.execute(statement, params)
+
     @app.get("/api/internal/mydatamed/concierge/health")
     @require_service
     def mydatamed_concierge_health():
@@ -235,29 +254,15 @@ def install_mydatamed_concierge_bridge(app, db, User, fail, log):
         if not signature_id:
             return complete_operation(operation, {"success": False, "error": "signature_request_missing"}, 502)
 
-        db.session.execute(text("""
-            INSERT INTO signature_events (id, request_id, event_type, payload, created_at)
-            VALUES (:id, :request_id, 'mydatamed.concierge.context', CAST(:payload AS jsonb), NOW())
-        """), {
-            "id": str(uuid.uuid4()),
-            "request_id": signature_id,
-            "payload": json.dumps({
-                "external_reference": external_reference,
-                "document_type": document_type,
-                "source": "mydatamed_concierge",
-            }, ensure_ascii=False),
+        add_signature_event(signature_id, "mydatamed.concierge.context", {
+            "external_reference": external_reference,
+            "document_type": document_type,
+            "source": "mydatamed_concierge",
         })
-        db.session.execute(text("""
-            INSERT INTO signature_events (id, request_id, event_type, payload, created_at)
-            VALUES (:id, :request_id, 'policy.verified_evidence_required', CAST(:payload AS jsonb), NOW())
-        """), {
-            "id": str(uuid.uuid4()),
-            "request_id": signature_id,
-            "payload": json.dumps({
-                "reason": "mydatamed_concierge_legal_document",
-                "minimum_evidence": "verified_evidence",
-                "identity_method": "email_otp",
-            }, ensure_ascii=False),
+        add_signature_event(signature_id, "policy.verified_evidence_required", {
+            "reason": "mydatamed_concierge_legal_document",
+            "minimum_evidence": "verified_evidence",
+            "identity_method": "email_otp",
         })
         db.session.commit()
 
