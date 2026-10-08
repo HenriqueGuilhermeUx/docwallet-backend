@@ -759,6 +759,83 @@ def login_with_nexa():
     })
 
 
+@app.post("/api/auth/nexa/link")
+@require_auth
+def link_nexa_identity():
+    if not NEXA_SSO_ENABLED:
+        return error_response("Integração Nexa ID ainda não está habilitada.", 503)
+
+    data = request.get_json(silent=True) or {}
+    token = (data.get("token") or "").strip()
+    if not token:
+        return error_response("Token Nexa ID é obrigatório.", 400)
+
+    try:
+        nexa_user = validate_nexa_sso_token(token)
+    except ValueError as exc:
+        return error_response(str(exc), 401)
+    except ConnectionError:
+        return error_response("Não foi possível validar o Nexa ID agora.", 502)
+
+    email = str(nexa_user.get("email") or "").strip().lower()
+    name = str(nexa_user.get("fullName") or nexa_user.get("name") or "").strip()
+    nexa_user_id = str(nexa_user.get("id") or "").strip()
+    nexa_id = str(nexa_user.get("nexaId") or "").strip()
+    current_user = request.user
+
+    if not email or not nexa_user_id:
+        return error_response("Nexa ID não retornou identidade suficiente.", 401)
+
+    if str(current_user.email or "").strip().lower() != email:
+        return error_response(
+            "O e-mail da conta DocWallet atual não corresponde ao Nexa ID.",
+            403,
+        )
+
+    if current_user.nexa_user_id and current_user.nexa_user_id != nexa_user_id:
+        return error_response(
+            "Esta conta DocWallet já está vinculada a outro Nexa ID.",
+            409,
+        )
+
+    linked_user = User.query.filter_by(nexa_user_id=nexa_user_id).first()
+    if linked_user and linked_user.id != current_user.id:
+        return error_response(
+            "Este Nexa ID já está vinculado a outra conta DocWallet.",
+            409,
+        )
+
+    current_user.nexa_user_id = nexa_user_id
+    if nexa_id:
+        current_user.nexa_id = nexa_id
+    if name and not current_user.name:
+        current_user.name = name
+    db.session.commit()
+
+    audit(
+        "auth.nexa.link",
+        current_user.id,
+        "user",
+        current_user.id,
+        {
+            "nexa_user_id": nexa_user_id,
+            "nexa_id": nexa_id or None,
+        },
+    )
+
+    return jsonify({
+        "success": True,
+        "token": create_token(current_user),
+        "user": user_to_dict(current_user),
+        "federation": {
+            "source": "nexa",
+            "nexa_user_id": nexa_user_id,
+            "nexa_id": nexa_id or None,
+            "linked": True,
+        },
+    })
+
+
 @app.get("/api/auth/me")
 @require_auth
 def me():
