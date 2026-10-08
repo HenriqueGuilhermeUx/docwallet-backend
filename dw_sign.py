@@ -413,6 +413,12 @@ def install_sign(app, db, auth_required, fail, log):
         device = body.get('device_fingerprint') or body.get('device') or {}
         identity = party.identity_verification or {}
         identity_verified = bool(isinstance(identity, dict) and identity.get('verified_at'))
+        requires_verified_evidence = SignatureEvent.query.filter_by(
+            request_id=req.id,
+            event_type='policy.verified_evidence_required',
+        ).first() is not None
+        if requires_verified_evidence and not identity_verified:
+            return fail('Este documento exige verificação de identidade por código enviado ao e-mail antes da assinatura.', 409)
         evidence_level = 'verified_evidence' if identity_verified else 'reinforced_evidence'
         accepted = bool(body.get('accepted'))
         phrase_ok = confirmation_phrase.upper().strip() in {'EU ACEITO', 'ACEITO', 'EU ACEITO ASSINAR'}

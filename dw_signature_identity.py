@@ -15,6 +15,35 @@ def install_signature_identity(app, db, fail, log):
     def _utcnow():
         return dt.datetime.utcnow()
 
+    def _decode_json(value):
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return {}
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode('utf-8', errors='replace')
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _as_datetime(value):
+        if value is None or isinstance(value, dt.datetime):
+            return value
+        if isinstance(value, str):
+            raw = value.strip().replace('Z', '+00:00')
+            try:
+                parsed = dt.datetime.fromisoformat(raw)
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+                return parsed
+            except Exception:
+                return None
+        return None
+
     def _otp_secret():
         return (os.environ.get('SIGNATURE_OTP_SECRET') or os.environ.get('SECRET_KEY') or '').encode('utf-8')
 
@@ -40,7 +69,7 @@ def install_signature_identity(app, db, fail, log):
         return f'{masked_local}@{domain}'
 
     def _party_for_code(code):
-        return db.session.execute(text('''
+        row = db.session.execute(text('''
             SELECT sp.id AS party_id, sp.request_id, sp.name, sp.email, sp.status,
                    sp.identity_verification, sr.title, sr.status AS request_status
               FROM signature_parties sp
@@ -48,17 +77,30 @@ def install_signature_identity(app, db, fail, log):
              WHERE sp.code = :code
              LIMIT 1
         '''), {'code': code}).mappings().first()
+        if not row:
+            return None
+        item = dict(row)
+        item['identity_verification'] = _decode_json(item.get('identity_verification'))
+        return item
 
     def _event(request_id, party_id, event_type, payload):
-        db.session.execute(text('''
-            INSERT INTO signature_events (id, request_id, party_id, event_type, payload, created_at)
-            VALUES (:id, :request_id, :party_id, :event_type, CAST(:payload AS jsonb), NOW())
-        '''), {
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        if dialect_name == 'sqlite':
+            sql = '''
+                INSERT INTO signature_events (id, request_id, party_id, event_type, payload, created_at)
+                VALUES (:id, :request_id, :party_id, :event_type, :payload, CURRENT_TIMESTAMP)
+            '''
+        else:
+            sql = '''
+                INSERT INTO signature_events (id, request_id, party_id, event_type, payload, created_at)
+                VALUES (:id, :request_id, :party_id, :event_type, CAST(:payload AS jsonb), NOW())
+            '''
+        db.session.execute(text(sql), {
             'id': str(uuid.uuid4()),
             'request_id': request_id,
             'party_id': party_id,
             'event_type': event_type,
-            'payload': json.dumps(payload, ensure_ascii=False),
+            'payload': payload_json,
         })
 
     def _send_otp_email(to_email, party_name, title, code):
@@ -119,7 +161,9 @@ def install_signature_identity(app, db, fail, log):
             raise RuntimeError(f'Falha ao enviar código: {exc}')
 
     with app.app_context():
-        statements = [
+        dialect_name = db.engine.dialect.name
+
+        base_statements = [
             '''CREATE TABLE IF NOT EXISTS signature_identity_challenges (
                 id VARCHAR(36) PRIMARY KEY,
                 party_id VARCHAR(36) NOT NULL,
@@ -130,37 +174,55 @@ def install_signature_identity(app, db, fail, log):
                 attempts INTEGER NOT NULL DEFAULT 0,
                 expires_at TIMESTAMP NOT NULL,
                 verified_at TIMESTAMP NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )''',
             'CREATE INDEX IF NOT EXISTS idx_signature_identity_party ON signature_identity_challenges(party_id)',
             'CREATE INDEX IF NOT EXISTS idx_signature_identity_status ON signature_identity_challenges(status)',
-            'ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS identity_verification JSONB',
-            '''CREATE OR REPLACE FUNCTION docwallet_enforce_verified_evidence()
-               RETURNS TRIGGER AS $$
-               BEGIN
-                 IF NEW.evidence_level = 'verified_evidence' AND
-                    (NEW.identity_verification IS NULL OR COALESCE(NEW.identity_verification->>'verified_at', '') = '') THEN
-                   NEW.evidence_level := 'reinforced_evidence';
-                 ELSIF NEW.status = 'signed' AND
-                       NEW.identity_verification IS NOT NULL AND
-                       COALESCE(NEW.identity_verification->>'verified_at', '') <> '' AND
-                       NEW.evidence_level <> 'icp_brasil_qualified' THEN
-                   NEW.evidence_level := 'verified_evidence';
-                 END IF;
-                 RETURN NEW;
-               END;
-               $$ LANGUAGE plpgsql''',
-            'DROP TRIGGER IF EXISTS trg_docwallet_verified_evidence ON signature_parties',
-            '''CREATE TRIGGER trg_docwallet_verified_evidence
-               BEFORE INSERT OR UPDATE ON signature_parties
-               FOR EACH ROW EXECUTE FUNCTION docwallet_enforce_verified_evidence()''',
         ]
-        for sql in statements:
-            try:
-                db.session.execute(text(sql))
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
+
+        for sql in base_statements:
+            db.session.execute(text(sql))
+        db.session.commit()
+
+        if dialect_name != 'sqlite':
+            postgres_statements = [
+                'ALTER TABLE signature_parties ADD COLUMN IF NOT EXISTS identity_verification JSONB',
+                '''CREATE OR REPLACE FUNCTION docwallet_enforce_verified_evidence()
+                   RETURNS TRIGGER AS $$
+                   BEGIN
+                     IF NEW.evidence_level = 'verified_evidence' AND
+                        (NEW.identity_verification IS NULL OR COALESCE(NEW.identity_verification->>'verified_at', '') = '') THEN
+                       NEW.evidence_level := 'reinforced_evidence';
+                     ELSIF NEW.status = 'signed' AND
+                           NEW.identity_verification IS NOT NULL AND
+                           COALESCE(NEW.identity_verification->>'verified_at', '') <> '' AND
+                           NEW.evidence_level <> 'icp_brasil_qualified' THEN
+                       NEW.evidence_level := 'verified_evidence';
+                     END IF;
+                     RETURN NEW;
+                   END;
+                   $$ LANGUAGE plpgsql''',
+                'DROP TRIGGER IF EXISTS trg_docwallet_verified_evidence ON signature_parties',
+                '''CREATE TRIGGER trg_docwallet_verified_evidence
+                   BEFORE INSERT OR UPDATE ON signature_parties
+                   FOR EACH ROW EXECUTE FUNCTION docwallet_enforce_verified_evidence()''',
+            ]
+            for sql in postgres_statements:
+                try:
+                    db.session.execute(text(sql))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+
+        # Fail loudly if the OTP challenge storage is unavailable.
+        db.session.execute(text('SELECT 1 FROM signature_identity_challenges LIMIT 1'))
+        app.logger.info(
+            'DocWallet signature OTP ready: dialect=%s resend=%s sender=%s secret=%s',
+            dialect_name,
+            bool((os.environ.get('RESEND_API_KEY') or '').strip()),
+            bool((os.environ.get('SIGNATURE_EMAIL_FROM') or '').strip()),
+            bool(_otp_secret()),
+        )
 
     @app.get('/api/sign/<code>/identity')
     def signature_identity_config(code):
@@ -168,11 +230,19 @@ def install_signature_identity(app, db, fail, log):
         if not party:
             return fail('Link de assinatura não encontrado.', 404)
         identity = party['identity_verification'] or {}
+        required = db.session.execute(text('''
+            SELECT 1
+              FROM signature_events
+             WHERE request_id = :request_id
+               AND event_type = 'policy.verified_evidence_required'
+             LIMIT 1
+        '''), {'request_id': party['request_id']}).first() is not None
         return jsonify({
             'success': True,
             'emailAvailable': bool(party['email']),
             'maskedEmail': _mask_email(party['email']),
             'verified': bool(identity.get('verified_at')),
+            'required': required,
             'method': identity.get('method'),
             'verifiedAt': identity.get('verified_at'),
             'evidenceLevel': 'verified_evidence' if identity.get('verified_at') else 'reinforced_evidence',
@@ -197,7 +267,8 @@ def install_signature_identity(app, db, fail, log):
              ORDER BY created_at DESC LIMIT 1
         '''), {'party_id': party['party_id']}).mappings().first()
         now = _utcnow()
-        if latest and latest['created_at'] and (now - latest['created_at']).total_seconds() < 45:
+        latest_created_at = _as_datetime(latest['created_at']) if latest else None
+        if latest_created_at and (now - latest_created_at).total_seconds() < 45:
             return fail('Aguarde alguns segundos antes de solicitar outro código.', 429)
 
         challenge_id = str(uuid.uuid4())
@@ -273,7 +344,8 @@ def install_signature_identity(app, db, fail, log):
         if row['status'] != 'sent':
             return fail('Este código não está mais disponível. Solicite um novo.', 400)
         now = _utcnow()
-        if row['expires_at'] <= now:
+        expires_at = _as_datetime(row['expires_at'])
+        if not expires_at or expires_at <= now:
             db.session.execute(text("UPDATE signature_identity_challenges SET status = 'expired' WHERE id = :id"), {'id': challenge_id})
             db.session.commit()
             return fail('O código expirou. Solicite um novo.', 400)
@@ -306,12 +378,25 @@ def install_signature_identity(app, db, fail, log):
                SET attempts = :attempts, status = 'verified', verified_at = :verified_at
              WHERE id = :id
         '''), {'attempts': attempts, 'verified_at': now, 'id': challenge_id})
-        db.session.execute(text('''
-            UPDATE signature_parties
-               SET identity_verification = CAST(:identity AS jsonb),
-                   evidence_level = 'verified_evidence'
-             WHERE id = :party_id
-        '''), {'identity': json.dumps(identity, ensure_ascii=False), 'party_id': party['party_id']})
+        identity_json = json.dumps(identity, ensure_ascii=False)
+        if dialect_name == 'sqlite':
+            identity_sql = '''
+                UPDATE signature_parties
+                   SET identity_verification = :identity,
+                       evidence_level = 'verified_evidence'
+                 WHERE id = :party_id
+            '''
+        else:
+            identity_sql = '''
+                UPDATE signature_parties
+                   SET identity_verification = CAST(:identity AS jsonb),
+                       evidence_level = 'verified_evidence'
+                 WHERE id = :party_id
+            '''
+        db.session.execute(text(identity_sql), {
+            'identity': identity_json,
+            'party_id': party['party_id'],
+        })
         _event(party['request_id'], party['party_id'], 'identity.email_otp.verified', {
             'challenge_id': challenge_id,
             'target_hash': row['target_hash'],
