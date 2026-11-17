@@ -32,5 +32,9 @@ jobs:
             Flask==3.0.3 Flask-Cors==4.0.1 Flask-SQLAlchemy==3.1.1 \
             SQLAlchemy==2.0.31 python-dotenv==1.0.1 PyJWT==2.8.0 \
             bcrypt==4.1.3 Werkzeug==3.0.3 pypdf==4.3.1 reportlab==4.2.5
+      - name: Apply the same startup patch as Render, locally on CI copy
+        run: |
+          python fix_sqlalchemy.py
+          python -m py_compile app.py
       - name: Run private-document authorization contract offline
         run: python -m unittest discover -s tests -p test_private_download_contract.py -v
