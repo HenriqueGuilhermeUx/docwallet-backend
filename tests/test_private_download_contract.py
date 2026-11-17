@@ -75,6 +75,46 @@ class PrivateDownloadContractTest(unittest.TestCase):
         res = self.client.get(self.url, headers={"Authorization": "Bearer invalid.synthetic.token"})
         self.assertEqual(res.status_code, 401)
 
+    def test_deleted_document_cannot_be_retrieved_or_downloaded(self):
+        """Use a second disposable synthetic record to avoid test order dependencies."""
+        import uuid
+
+        marker = uuid.uuid4().hex
+        path = _ROOT / "uploads" / ("deleted-" + marker + ".pdf")
+        path.write_bytes(self.payload)
+        with app.app_context():
+            owner = User.query.filter_by(email="owner@example.invalid").first()
+            self.assertIsNotNone(owner)
+            record = Document(
+                user_id=owner.id,
+                name="Disposal fixture",
+                original_filename=path.name,
+                stored_filename=path.name,
+                file_path=str(path),
+                file_type="application/pdf",
+                file_size=len(self.payload),
+                file_hash=hashlib.sha256(self.payload).hexdigest(),
+                doc_type="rg",
+                category="ids",
+            )
+            db.session.add(record)
+            db.session.commit()
+            document_id = record.id
+        headers = {"Authorization": "Bearer " + self.owner_token}
+        base = "/api/documents/" + document_id
+        self.assertEqual(self.client.get(base + "/download", headers=headers).status_code, 200)
+        self.assertEqual(self.client.delete(base, headers=headers).status_code, 200)
+        self.assertEqual(self.client.get(base, headers=headers).status_code, 404)
+        self.assertEqual(self.client.get(base + "/download", headers=headers).status_code, 404)
+        self.assertFalse(path.exists(), "Deleted document bytes should not remain on disk")
+
+    def test_other_user_cannot_delete_private_document(self):
+        headers = {"Authorization": "Bearer " + self.other_token}
+        response = self.client.delete("/api/documents/" + self.document_id, headers=headers)
+        self.assertEqual(response.status_code, 404)
+        owner_headers = {"Authorization": "Bearer " + self.owner_token}
+        self.assertEqual(self.client.get(self.url, headers=owner_headers).status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
