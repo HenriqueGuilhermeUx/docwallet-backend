@@ -1,0 +1,47 @@
+# Dedicated DocWallet Docs iOS QA environment. Not the production render.yaml.
+# Select this file explicitly when creating an isolated Render Blueprint.
+# The deploy is opt-in and disabled for future commits.
+services:
+  - type: web
+    name: docwallet-ios-qa-isolated
+    runtime: python
+    repo: https://github.com/HenriqueGuilhermeUx/docwallet-backend
+    branch: test/ios-private-download-contract-20261117
+    region: oregon
+    plan: free
+    autoDeployTrigger: 'off'
+    buildCommand: pip install -r requirements.txt
+    startCommand: python fix_sqlalchemy.py && gunicorn staging_ios_entry:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --log-level warning
+    envVars:
+      - key: DOCWALLET_IOS_STAGING_ONLY
+        value: '1'
+      - key: DOCWALLET_IOS_STAGING_KEY
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:////tmp/docwallet-ios-qa-20261117.sqlite3
+      - key: UPLOAD_DIR
+        value: /tmp/docwallet-ios-qa-uploads
+      - key: NEXA_SSO_ENABLED
+        value: 'false'
+      - key: NEXA_ECOSYSTEM_ATTENTION_ENABLED
+        value: 'false'
+      - key: NEXOFFICE_BRIDGE_ENABLED
+        value: 'false'
+      - key: DOCFLOW_EXTERNAL_INTEGRATIONS_ENABLED
+        value: 'false'
+      - key: DOCUMENT_INTELLIGENCE_ALLOW_EXTERNAL
+        value: 'false'
+      - key: DOCUMENT_INTELLIGENCE_ENABLED
+        value: 'false'
+      - key: ICP_SIGNATURE_ENABLED
+        value: 'false'
+      - key: DOCWALLET_REQUIRE_ONCHAIN_VERIFY
+        value: 'true'
+      - key: DOCWALLET_ALLOW_UNVERIFIED_TX
+        value: 'false'
+      - key: DOCWALLET_RPC_URL
+        value: ''
+      - key: CORS_ORIGINS
+        value: 'https://docwallet.netlify.app'
