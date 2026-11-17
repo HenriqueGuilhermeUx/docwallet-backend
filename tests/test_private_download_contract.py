@@ -6,6 +6,7 @@ Never connects to Render, PostgreSQL, or a deployed DocWallet environment.
 import hashlib
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -17,6 +18,7 @@ os.environ["JWT_SECRET"] = "offline-ci-synthetic-secret-not-for-production"
 os.environ["NEXA_SSO_ENABLED"] = "false"
 os.environ["NEXA_ECOSYSTEM_ATTENTION_ENABLED"] = "false"
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # prefer repository app.py over tests/app.py
 from app import Document, User, app, create_token, db  # noqa: E402
 
 
