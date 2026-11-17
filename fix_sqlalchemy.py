@@ -35,7 +35,7 @@ text = text.replace(
 
 text = text.replace(
     "def current_user_from_request() -> Optional[User]:\n    auth = request.headers.get(\"Authorization\", \"\")\n    if not auth.startswith(\"Bearer \"):\n        return None\n    token = auth.replace(\"Bearer \", \"\", 1).strip()",
-    "def current_user_from_request() -> Optional[User]:\n    auth = request.headers.get(\"Authorization\", \"\")\n    if not auth.startswith(\"Bearer \"):\n        query_session = request.args.get(\"s\") or \"\"\n        if query_session:\n            auth = \"Bearer \" + query_session\n        else:\n            return None\n    token = auth.replace(\"Bearer \", \"\", 1).strip()",
+    "def current_user_from_request() -> Optional[User]:\n    auth = request.headers.get(\"Authorization\", \"\")\n    if not auth.startswith(\"Bearer \"):\n        return None\n    token = auth.replace(\"Bearer \", \"\", 1).strip()",
 )
 
 # Do not translate a transient database disconnect into a false authentication
@@ -45,11 +45,7 @@ text = text.replace(
     '''def current_user_from_request() -> Optional[User]:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        query_session = request.args.get("s") or ""
-        if query_session:
-            auth = "Bearer " + query_session
-        else:
-            return None
+        return None
     token = auth.replace("Bearer ", "", 1).strip()
     try:
         payload = decode_token(token)
@@ -81,11 +77,7 @@ def _reset_db_session():
 def current_user_from_request() -> Optional[User]:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        query_session = request.args.get("s") or ""
-        if query_session:
-            auth = "Bearer " + query_session
-        else:
-            return None
+        return None
     token = auth.replace("Bearer ", "", 1).strip()
     try:
         payload = decode_token(token)
