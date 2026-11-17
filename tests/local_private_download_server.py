@@ -18,6 +18,8 @@ out_path = os.environ.get("DOCWALLET_LOCAL_E2E_FIXTURES", "")
 if not out_path:
     raise SystemExit("Missing temporary fixture path")
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import app, db, User, Document, create_token  # noqa: E402
 import hashlib
 
